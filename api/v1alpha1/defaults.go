@@ -10,15 +10,13 @@ import (
 // belt-and-braces.
 //
 // CRD defaulting only descends into a struct that is PRESENT in the submitted
-// object. A manifest that omits `spec.bootstrap.gvisor` entirely never has
-// `gvisor.enabled: true` applied, so the field stays nil rather than becoming
+// object. A manifest that omits `spec.bootstrap.containerd` entirely never has
+// its apt pin applied, so the field stays empty rather than becoming
 // true. That is precisely the silent omission the default was chosen to make
 // impossible, so the Go accessors below are the real source of truth and the
 // markers are the documentation of them.
 const (
 	DefaultContainerdAptPin = "2.*"
-	DefaultGVisorHandler    = "runsc"
-	DefaultGVisorNetwork    = "host"
 	DefaultPackageRevision  = "1.1"
 	DefaultMaxPods          = int32(110)
 )
@@ -55,40 +53,6 @@ func DefaultEvictionHard() map[string]string {
 	}
 }
 
-// GVisorEnabled reports whether runsc should be installed and registered.
-func (in *GVisorSpec) GVisorEnabled() bool {
-	if in == nil || in.Enabled == nil {
-		return true
-	}
-	return *in.Enabled
-}
-
-// RuntimeHandlerOrDefault returns the containerd runtime handler name.
-func (in *GVisorSpec) RuntimeHandlerOrDefault() string {
-	if in == nil || in.RuntimeHandler == "" {
-		return DefaultGVisorHandler
-	}
-	return in.RuntimeHandler
-}
-
-// NetworkOrDefault returns gVisor's network mode. Host (hostinet) is the
-// default because gVisor's own netstack is incompatible with Cilium's
-// kube-proxy replacement.
-func (in *GVisorSpec) NetworkOrDefault() string {
-	if in == nil || in.Network == "" {
-		return DefaultGVisorNetwork
-	}
-	return in.Network
-}
-
-// NodeLabelOrDefault returns the label set on nodes carrying runsc.
-func (in *GVisorSpec) NodeLabelOrDefault() string {
-	if in == nil || in.NodeLabel == "" {
-		return LabelGVisor
-	}
-	return in.NodeLabel
-}
-
 // SystemdCgroupEnabled reports whether containerd uses the systemd cgroup
 // driver, which must match the kubelet's.
 func (in *ContainerdSpec) SystemdCgroupEnabled() bool {
@@ -100,8 +64,8 @@ func (in *ContainerdSpec) SystemdCgroupEnabled() bool {
 
 // AptPinOrDefault returns the containerd.io apt version constraint. It holds
 // containerd within a major: unattended upgrades must patch it, but crossing a
-// major changes the CRI plugin configuration shape and breaks the gVisor shim
-// wiring.
+// major changes the CRI plugin configuration shape and breaks any additional
+// runtime handler wired into it.
 func (in *ContainerdSpec) AptPinOrDefault() string {
 	if in == nil || in.AptPin == "" {
 		return DefaultContainerdAptPin

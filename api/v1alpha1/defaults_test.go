@@ -10,32 +10,17 @@ import (
 // defaults.go exists.
 //
 // CRD defaulting only descends into structs PRESENT in the submitted object.
-// A manifest that omits `spec.bootstrap.gvisor` never gets
-// `gvisor.enabled: true` applied, so the field arrives nil. Verified against a
-// live API server with a manifest omitting those blocks: `containerd`,
-// `gvisor` and `unattendedUpgrades` were entirely absent from the returned
+// Verified against a live API server with a manifest omitting them:
+// `containerd` and `unattendedUpgrades` were entirely absent from the returned
 // object, while sibling scalars at a present level (osFamily, mode,
 // packageRevision, packageUpgradeOnBoot) were all defaulted.
 //
-// So a zero-valued spec must still yield the safe answers, or gVisor silently
-// does not get installed and tenant pods fail at container-create on a node
-// that looks healthy.
+// So a zero-valued spec must still yield safe answers. The containerd apt pin
+// is the sharpest case: absent it, nothing constrains the major, and crossing
+// one changes the CRI plugin config shape.
 func TestAccessorsOnAbsentBlocks(t *testing.T) {
 	var spec HCloudNodeClassSpec // everything nil or zero
 
-	if !spec.Bootstrap.GVisor.GVisorEnabled() {
-		t.Error("gVisor must default ON when the block is absent; a node without runsc " +
-			"breaks tenant pods at container-create, not at scheduling")
-	}
-	if got := spec.Bootstrap.GVisor.NetworkOrDefault(); got != DefaultGVisorNetwork {
-		t.Errorf("gVisor network = %q, want %q (netstack is incompatible with Cilium kube-proxy replacement)", got, DefaultGVisorNetwork)
-	}
-	if got := spec.Bootstrap.GVisor.RuntimeHandlerOrDefault(); got != DefaultGVisorHandler {
-		t.Errorf("runtime handler = %q, want %q", got, DefaultGVisorHandler)
-	}
-	if got := spec.Bootstrap.GVisor.NodeLabelOrDefault(); got != LabelGVisor {
-		t.Errorf("node label = %q, want %q", got, LabelGVisor)
-	}
 	if !spec.Bootstrap.Containerd.SystemdCgroupEnabled() {
 		t.Error("systemd cgroup must default on; it has to match the kubelet's driver")
 	}
@@ -63,7 +48,6 @@ func TestExplicitFalseIsHonoured(t *testing.T) {
 		PublicIPv4: lo.ToPtr(false),
 		Bootstrap: BootstrapSpec{
 			PackageUpgradeOnBoot: lo.ToPtr(false),
-			GVisor:               GVisorSpec{Enabled: lo.ToPtr(false)},
 			Containerd:           ContainerdSpec{SystemdCgroup: lo.ToPtr(false)},
 			UnattendedUpgrades:   UnattendedUpgradesSpec{Enabled: lo.ToPtr(false)},
 		},
@@ -74,9 +58,6 @@ func TestExplicitFalseIsHonoured(t *testing.T) {
 	}
 	if spec.Bootstrap.PackageUpgradeOnBootEnabled() {
 		t.Error("explicit packageUpgradeOnBoot=false ignored")
-	}
-	if spec.Bootstrap.GVisor.GVisorEnabled() {
-		t.Error("explicit gvisor.enabled=false ignored")
 	}
 	if spec.Bootstrap.Containerd.SystemdCgroupEnabled() {
 		t.Error("explicit systemdCgroup=false ignored")

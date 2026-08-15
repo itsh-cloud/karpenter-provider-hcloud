@@ -42,7 +42,6 @@ func fixture() *HCloudNodeClass {
 				KubernetesVersion: "1.34.7",
 				PackageRevision:   "1.1",
 				Containerd:        ContainerdSpec{AptPin: "2.*"},
-				GVisor:            GVisorSpec{Enabled: lo.ToPtr(true), Network: "host"},
 			},
 		},
 	}
@@ -56,7 +55,7 @@ func fixture() *HCloudNodeClass {
 // dependency bump changing traversal order). Either way it must be a
 // deliberate decision, so update this constant and bump HashVersion together.
 func TestHashStable(t *testing.T) {
-	const want = "9267508222720582274"
+	const want = "15927006481853939636"
 	if got := fixture().Hash(); got != want {
 		t.Fatalf("hash changed: got %s, want %s\n\n"+
 			"If this change is intended, update the constant AND bump HashVersion, "+
@@ -135,9 +134,11 @@ func TestHashCoversUndetectableFields(t *testing.T) {
 		{"bootstrap.kubernetesVersion", func(s *HCloudNodeClassSpec) { s.Bootstrap.KubernetesVersion = "1.35.0" }},
 		{"bootstrap.packageRevision", func(s *HCloudNodeClassSpec) { s.Bootstrap.PackageRevision = "1.2" }},
 		{"bootstrap.containerd.aptPin", func(s *HCloudNodeClassSpec) { s.Bootstrap.Containerd.AptPin = "3.*" }},
-		{"bootstrap.gvisor.enabled", func(s *HCloudNodeClassSpec) { s.Bootstrap.GVisor.Enabled = lo.ToPtr(false) }},
-		{"bootstrap.gvisor.network", func(s *HCloudNodeClassSpec) { s.Bootstrap.GVisor.Network = "sandbox" }},
+		{"bootstrap.containerd.extraConfig", func(s *HCloudNodeClassSpec) { s.Bootstrap.Containerd.ExtraConfig = "[plugins]" }},
 		{"bootstrap.extraPackages", func(s *HCloudNodeClassSpec) { s.Bootstrap.ExtraPackages = []string{"htop"} }},
+		{"bootstrap.extraFiles", func(s *HCloudNodeClassSpec) {
+			s.Bootstrap.ExtraFiles = []File{{Path: "/etc/example.conf", Content: "x"}}
+		}},
 		{"bootstrap.preJoinCommands", func(s *HCloudNodeClassSpec) { s.Bootstrap.PreJoinCommands = []string{"echo hi"} }},
 		// The deliberate roll-the-fleet lever. If this stops changing the
 		// hash, operators lose their only safe way to force a recycle.

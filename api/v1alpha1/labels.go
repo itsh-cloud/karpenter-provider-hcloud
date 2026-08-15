@@ -30,18 +30,6 @@ const (
 	// in one zone share a private network.
 	LabelNetworkZone = Group + "/network-zone"
 
-	// LabelGVisor marks nodes that have the runsc runtime handler registered
-	// with containerd.
-	//
-	// This is a SCHEDULING AID, not an attestation. NodeRestriction does not
-	// cover custom label prefixes, so a compromised kubelet can set it on
-	// itself; and a compromised node can defeat gVisor locally regardless,
-	// since it controls its own containerd configuration. Its purpose is to
-	// let a gvisor RuntimeClass carry a nodeSelector, turning "pod lands on a
-	// node without runsc and fails at container-create" into an honest
-	// Unschedulable.
-	LabelGVisor = Group + "/gvisor"
-
 	// LabelCSILocation is the topology key the Hetzner CSI driver writes onto
 	// nodes and onto every PV's nodeAffinity. It is NOT ours, but it must be
 	// registered as well-known and carried on every Offering.
@@ -69,9 +57,14 @@ const (
 // Compatible() to reject pods carrying them.
 //
 // Add a key here ONLY if undefined-means-allowed is the behaviour you want.
-// The inverse matters just as much: `ci`, for example, must stay *custom* so
-// that leaving it undefined on the general NodePools DENIES CI pods there.
-// Registering it would silently break CI node isolation.
+// The inverse matters just as much: a label used to steer workloads onto
+// dedicated nodes must stay *custom*, so that leaving it undefined on the
+// general NodePools DENIES those pods there. Registering such a label would
+// silently dissolve the isolation.
+//
+// Note these describe intrinsic properties of the machine Hetzner sold you.
+// Anything installed by the bootstrap is a property of the NodeClass, and is
+// advertised with an ordinary NodePool template label rather than from here.
 var wellKnownLabels = []string{
 	LabelServerTypeLine,
 	LabelCPUType,
@@ -81,7 +74,6 @@ var wellKnownLabels = []string{
 	LabelMemoryGB,
 	LabelDiskGB,
 	LabelNetworkZone,
-	LabelGVisor,
 	LabelCSILocation,
 }
 

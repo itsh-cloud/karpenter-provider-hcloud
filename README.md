@@ -32,11 +32,16 @@ This repository is the Hetzner Cloud implementation of that interface.
 This provider is deliberately opinionated, and the constraints are worth knowing before you
 adopt it:
 
-- **Debian + kubeadm + containerd only.** The kubeadm join, containerd configuration and
-  gVisor setup are first-class CRD fields rather than an opaque `userData` blob. That is what
-  makes per-NodeClaim bootstrap tokens, correct taint rendering, and a single source of truth
-  for kubelet reservations possible. It also means Talos, k3s and non-Debian images are not
+- **Debian + kubeadm + containerd only.** The kubeadm join and containerd configuration are
+  first-class CRD fields rather than an opaque `userData` blob. That is what makes
+  per-NodeClaim bootstrap tokens, correct taint rendering, and a single source of truth for
+  kubelet reservations possible. It also means Talos, k3s and non-Debian images are not
   supported in v1.
+- **No opinion beyond that baseline.** Extra runtimes, drivers and kernel modules are
+  expressed with `extraPackages`, `extraFiles` and the join hooks, and advertised to the
+  scheduler with ordinary NodePool template labels. Karpenter already schedules against
+  `nodeSelector` natively, so a node capability needs no provider support to be selectable,
+  only to be installed.
 - **x86/amd64 only** for now.
 - **Bootstrap tokens are minted per NodeClaim with a short TTL**, owned by the NodeClaim so
   they are garbage-collected when it goes away. There is no long-lived shared join token.

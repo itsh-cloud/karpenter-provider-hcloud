@@ -2,12 +2,18 @@ package v1alpha1
 
 // OSFamily is the node operating system family.
 //
-// Single-valued today. The kubeadm join, containerd wiring and gVisor setup
-// are first-class fields rather than an opaque userData blob, which is what
-// makes per-NodeClaim bootstrap tokens, correct taint rendering and a single
-// source of truth for kubelet reservations possible. The cost is that this
-// provider hard-codes Debian + apt + kubeadm + containerd. The enum exists so
-// that adding a family later is an additive change rather than a redesign.
+// Single-valued today. The kubeadm join and containerd wiring are first-class
+// fields rather than an opaque userData blob, which is what makes
+// per-NodeClaim bootstrap tokens, correct taint rendering and a single source
+// of truth for kubelet reservations possible. The cost is that this provider
+// hard-codes Debian + apt + kubeadm + containerd. The enum exists so that
+// adding a family later is an additive change rather than a redesign.
+//
+// Anything beyond that baseline (extra runtimes, drivers, kernel modules) is
+// expressed through ExtraPackages, ExtraFiles (which cloud-init writes before
+// runcmd, so an apt source and its armored key land in time) and the
+// join hooks, and advertised to the scheduler with ordinary NodePool template
+// labels. The provider deliberately holds no opinion about it.
 //
 // +kubebuilder:validation:Enum=Debian
 type OSFamily string
@@ -75,9 +81,6 @@ type BootstrapSpec struct {
 	Containerd ContainerdSpec `json:"containerd,omitempty"`
 
 	// +optional
-	GVisor GVisorSpec `json:"gvisor,omitempty"`
-
-	// +optional
 	UnattendedUpgrades UnattendedUpgradesSpec `json:"unattendedUpgrades,omitempty"`
 
 	// Sysctls are written to /etc/sysctl.d and applied at boot.
@@ -142,53 +145,22 @@ type ContainerdSpec struct {
 	// The default holds containerd within its current major. Unattended
 	// upgrades should patch it, but must never cross a major boundary,
 	// because that changes the CRI plugin configuration shape and breaks the
-	// gVisor shim wiring.
+	// additional runtime handler wired into it.
 	//
 	// +kubebuilder:default="2.*"
 	// +optional
 	AptPin string `json:"aptPin,omitempty"`
 
-	// ExtraConfig is TOML appended to /etc/containerd/config.toml.
+	// ExtraConfig is TOML appended to /etc/containerd/config.toml before
+	// containerd first starts.
+	//
+	// This is where additional runtime handlers go, for example registering a
+	// sandboxed runtime. Note that the CRI plugin's config path changed
+	// between containerd majors, so the stanza must match whatever AptPin
+	// selects.
+	//
 	// +optional
 	ExtraConfig string `json:"extraConfig,omitempty"`
-}
-
-// GVisorSpec configures the gVisor (runsc) sandbox runtime.
-type GVisorSpec struct {
-	// Enabled installs runsc and registers it as a containerd runtime handler.
-	//
-	// Defaults to TRUE. For a general-purpose provider false would be the
-	// neutral default, but a RuntimeClass referencing a handler no node
-	// provides fails at container-create rather than at scheduling, which is
-	// a silent and confusing failure. Defaulting on makes that unreachable by
-	// omission.
-	//
-	// +kubebuilder:default=true
-	// +optional
-	Enabled *bool `json:"enabled,omitempty"`
-
-	// RuntimeHandler is the containerd runtime handler name.
-	// +kubebuilder:default=runsc
-	// +optional
-	RuntimeHandler string `json:"runtimeHandler,omitempty"`
-
-	// Network selects gVisor's network stack.
-	//
-	// Defaults to host (hostinet). gVisor's own netstack is incompatible with
-	// Cilium's kube-proxy replacement.
-	//
-	// +kubebuilder:validation:Enum=host;sandbox
-	// +kubebuilder:default=host
-	// +optional
-	Network string `json:"network,omitempty"`
-
-	// NodeLabel is set on nodes where runsc is registered, so a RuntimeClass
-	// can carry a matching nodeSelector. See LabelGVisor: this is a
-	// scheduling aid, not a security attestation.
-	//
-	// +kubebuilder:default="karpenter.itsh.dev/gvisor"
-	// +optional
-	NodeLabel string `json:"nodeLabel,omitempty"`
 }
 
 // UnattendedUpgradesSpec configures Debian unattended-upgrades.
