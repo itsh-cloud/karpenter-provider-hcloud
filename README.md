@@ -42,6 +42,10 @@ adopt it:
   scheduler with ordinary NodePool template labels. Karpenter already schedules against
   `nodeSelector` natively, so a node capability needs no provider support to be selectable,
   only to be installed.
+  A `Custom` bootstrap mode, taking a templated `userData` with the join token, endpoint, CA
+  hashes, taints and node labels injected as variables, is the planned way to support other
+  distributions and join mechanisms. The `osFamily` and `mode` enums are single-valued today
+  specifically so that addition is additive.
 - **x86/amd64 only** for now.
 - **Bootstrap tokens are minted per NodeClaim with a short TTL**, owned by the NodeClaim so
   they are garbage-collected when it goes away. There is no long-lived shared join token.
