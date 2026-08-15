@@ -1,0 +1,5 @@
+bin/
+coverage.out
+
+# `go build ./...` drops the main package's binary in the working directory
+/karpenter-provider-hcloud
