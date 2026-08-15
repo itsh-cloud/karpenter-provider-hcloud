@@ -1,0 +1,689 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: hcloudnodeclasses.karpenter.itsh.dev
+spec:
+  group: karpenter.itsh.dev
+  names:
+    categories:
+    - karpenter
+    kind: HCloudNodeClass
+    listKind: HCloudNodeClassList
+    plural: hcloudnodeclasses
+    shortNames:
+    - hcnc
+    - hcncs
+    singular: hcloudnodeclass
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.image.name
+      name: Image
+      type: string
+    - jsonPath: .status.network.name
+      name: Network
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          HCloudNodeClass describes how to build a Hetzner Cloud server that will join
+          this cluster as a node.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              HCloudNodeClassSpec is the desired shape of a node.
+
+              Fields carrying `hash:"ignore"` are readable back from the Hetzner API on a
+              live server, so drift compares them directly against the server rather than
+              against a stored hash. Everything else is hashed, because hcloud will not
+              return it once the server exists: notably user_data (write-only) and
+              ssh_keys (absent from the server representation entirely).
+            properties:
+              bootstrap:
+                description: Bootstrap describes how the node installs and joins.
+                properties:
+                  apiServerEndpoint:
+                    description: |-
+                      APIServerEndpoint overrides the discovered join endpoint, as host:port.
+
+                      Normally left empty: the endpoint is read at runtime from the
+                      kube-public/cluster-info ConfigMap. Set it when cluster-info advertises
+                      an endpoint nodes should not use, such as a public address when nodes
+                      should join over the private network.
+                    type: string
+                  caCertHashes:
+                    description: |-
+                      CACertHashes overrides the discovered CA public-key pins, in
+                      "sha256:<hex>" form.
+
+                      Normally left empty and computed at runtime from cluster-info as the
+                      SPKI hash, matching kubeadm's --discovery-token-ca-cert-hash.
+                    items:
+                      pattern: ^sha256:[a-f0-9]{64}$
+                      type: string
+                    type: array
+                  containerd:
+                    description: ContainerdSpec configures the container runtime.
+                    properties:
+                      aptPin:
+                        default: 2.*
+                        description: |-
+                          AptPin constrains the containerd.io package version, as an apt version
+                          glob.
+
+                          The default holds containerd within its current major. Unattended
+                          upgrades should patch it, but must never cross a major boundary,
+                          because that changes the CRI plugin configuration shape and breaks the
+                          gVisor shim wiring.
+                        type: string
+                      extraConfig:
+                        description: ExtraConfig is TOML appended to /etc/containerd/config.toml.
+                        type: string
+                      systemdCgroup:
+                        default: true
+                        description: SystemdCgroup sets the systemd cgroup driver.
+                        type: boolean
+                    type: object
+                  extraFiles:
+                    description: ExtraFiles are additional files to write during cloud-init.
+                    items:
+                      description: File is a file written during cloud-init.
+                      properties:
+                        content:
+                          type: string
+                        owner:
+                          default: root
+                          type: string
+                        path:
+                          type: string
+                        permissions:
+                          default: "0644"
+                          description: Permissions is an octal mode string, e.g. "0644".
+                          pattern: ^0[0-7]{3}$
+                          type: string
+                      required:
+                      - content
+                      - path
+                      type: object
+                    type: array
+                  extraPackages:
+                    description: ExtraPackages are additional apt packages to install.
+                    items:
+                      type: string
+                    type: array
+                  gvisor:
+                    description: GVisorSpec configures the gVisor (runsc) sandbox
+                      runtime.
+                    properties:
+                      enabled:
+                        default: true
+                        description: |-
+                          Enabled installs runsc and registers it as a containerd runtime handler.
+
+                          Defaults to TRUE. For a general-purpose provider false would be the
+                          neutral default, but a RuntimeClass referencing a handler no node
+                          provides fails at container-create rather than at scheduling, which is
+                          a silent and confusing failure. Defaulting on makes that unreachable by
+                          omission.
+                        type: boolean
+                      network:
+                        default: host
+                        description: |-
+                          Network selects gVisor's network stack.
+
+                          Defaults to host (hostinet). gVisor's own netstack is incompatible with
+                          Cilium's kube-proxy replacement.
+                        enum:
+                        - host
+                        - sandbox
+                        type: string
+                      nodeLabel:
+                        default: karpenter.itsh.dev/gvisor
+                        description: |-
+                          NodeLabel is set on nodes where runsc is registered, so a RuntimeClass
+                          can carry a matching nodeSelector. See LabelGVisor: this is a
+                          scheduling aid, not a security attestation.
+                        type: string
+                      runtimeHandler:
+                        default: runsc
+                        description: RuntimeHandler is the containerd runtime handler
+                          name.
+                        type: string
+                    type: object
+                  kernelModules:
+                    description: KernelModules are loaded at boot via /etc/modules-load.d.
+                    items:
+                      type: string
+                    type: array
+                  kubernetesVersion:
+                    description: |-
+                      KubernetesVersion is the full version to install, e.g. "1.34.7".
+
+                      The apt repository stream is derived from its major.minor, and the
+                      pinned package version from the whole string plus PackageRevision.
+                      Changing this drifts the fleet, which is the supported upgrade path.
+                    pattern: ^[0-9]+\.[0-9]+\.[0-9]+$
+                    type: string
+                  mode:
+                    default: Managed
+                    description: |-
+                      BootstrapMode selects how userData is produced.
+
+                      Single-valued today. A Custom mode taking a raw blob is the obvious future
+                      addition, once the managed field set has settled.
+                    enum:
+                    - Managed
+                    type: string
+                  osFamily:
+                    default: Debian
+                    description: |-
+                      OSFamily is the node operating system family.
+
+                      Single-valued today. The kubeadm join, containerd wiring and gVisor setup
+                      are first-class fields rather than an opaque userData blob, which is what
+                      makes per-NodeClaim bootstrap tokens, correct taint rendering and a single
+                      source of truth for kubelet reservations possible. The cost is that this
+                      provider hard-codes Debian + apt + kubeadm + containerd. The enum exists so
+                      that adding a family later is an additive change rather than a redesign.
+                    enum:
+                    - Debian
+                    type: string
+                  packageRevision:
+                    default: "1.1"
+                    description: |-
+                      PackageRevision is the Debian package revision suffix, e.g. "1.1",
+                      producing kubelet=1.34.7-1.1.
+                    type: string
+                  packageUpgradeOnBoot:
+                    default: true
+                    description: |-
+                      PackageUpgradeOnBoot runs a full package upgrade during cloud-init.
+
+                      Exposed as a field because it is a real trade: it adds roughly one to
+                      four minutes to every boot and depends on external mirror speed, while
+                      Karpenter core's node registration timeout is a hardcoded 15 minutes. A
+                      slow mirror day with this enabled can produce a replacement loop. The
+                      durable fix is a prebuilt image; this is the lever until then.
+                    type: boolean
+                  postJoinCommands:
+                    description: PostJoinCommands run after a successful kubeadm join.
+                    items:
+                      type: string
+                    type: array
+                  preJoinCommands:
+                    description: PreJoinCommands run after packages are configured,
+                      before kubeadm join.
+                    items:
+                      type: string
+                    type: array
+                  revision:
+                    description: |-
+                      Revision is an arbitrary string with no effect other than being hashed.
+
+                      It is the deliberate "roll the fleet now" lever: bump it and every
+                      NodeClaim drifts, so Karpenter replaces each node one at a time inside
+                      the disruption budget and respecting PDBs. Because this provider does
+                      not use expireAfter (which is forceful and cannot be budget-gated),
+                      this is the primary mechanism for routine node recycling. Without such
+                      a field, operators resort to touching a real field to force a roll.
+                    type: string
+                  sysctls:
+                    additionalProperties:
+                      type: string
+                    description: Sysctls are written to /etc/sysctl.d and applied
+                      at boot.
+                    type: object
+                  unattendedUpgrades:
+                    description: UnattendedUpgradesSpec configures Debian unattended-upgrades.
+                    properties:
+                      enabled:
+                        default: true
+                        description: Enabled installs and configures unattended-upgrades.
+                        type: boolean
+                      extraOrigins:
+                        description: |-
+                          ExtraOrigins are additional origin patterns to allow, e.g. entries for
+                          third-party repositories whose packages should also auto-patch.
+                        items:
+                          type: string
+                        type: array
+                      removeUnusedKernelPackages:
+                        default: true
+                        description: |-
+                          RemoveUnusedKernelPackages lets unattended-upgrades purge superseded
+                          kernels, which otherwise fill /boot.
+                        type: boolean
+                    type: object
+                required:
+                - kubernetesVersion
+                type: object
+              firewallSelectors:
+                description: FirewallSelectors picks firewalls to apply.
+                items:
+                  description: FirewallSelectorTerm selects a Hetzner firewall by
+                    name or id.
+                  properties:
+                    id:
+                      format: int64
+                      type: integer
+                    name:
+                      type: string
+                  type: object
+                  x-kubernetes-validations:
+                  - message: exactly one of name or id must be set
+                    rule: has(self.name) != has(self.id)
+                maxItems: 5
+                type: array
+              imageDriftPolicy:
+                default: Ignore
+                description: |-
+                  ImageDriftPolicy controls whether a changed image ID drifts nodes.
+
+                  Defaults to Ignore, deliberately unlike some other providers. Hetzner
+                  rebuilds images such as debian-13 periodically and the ID changes each
+                  time; with Replace that rolls the entire fleet for no benefit, since the
+                  OS is fully reconfigured by apt at boot anyway. Set Replace only when
+                  pinning a custom snapshot you actually version.
+                enum:
+                - Ignore
+                - Replace
+                type: string
+              imageSelector:
+                description: |-
+                  ImageSelector picks the base image. Exactly one of name or id.
+
+                  Name-based selection follows Hetzner's periodic image rebuilds; an id
+                  pins one build forever.
+                properties:
+                  id:
+                    description: ID of the image.
+                    format: int64
+                    type: integer
+                  name:
+                    description: Name of the image, e.g. debian-13.
+                    type: string
+                type: object
+                x-kubernetes-validations:
+                - message: exactly one of name or id must be set
+                  rule: has(self.name) != has(self.id)
+              kubelet:
+                description: |-
+                  Kubelet is the authoritative source for kubelet reservations.
+
+                  These values feed BOTH the scheduling model (InstanceTypeOverhead, which
+                  is how Karpenter computes allocatable when bin-packing) AND the flags
+                  the kubelet actually runs with. They must be one field, because if the
+                  two diverge Karpenter overpacks every node by the difference and pods
+                  sit Pending on nodes it believes have room, with no alert for it.
+                properties:
+                  clusterDNS:
+                    description: ClusterDNS overrides the DNS server addresses passed
+                      to the kubelet.
+                    items:
+                      type: string
+                    type: array
+                  evictionHard:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      EvictionHard are the hard eviction thresholds.
+
+                      Note that --eviction-hard REPLACES kubelet's entire default map rather
+                      than merging into it, so omitting a signal that kubelet defaults to
+                      disables that signal entirely.
+                    type: object
+                  evictionSoft:
+                    additionalProperties:
+                      type: string
+                    description: EvictionSoft are the soft eviction thresholds.
+                    type: object
+                  evictionSoftGracePeriod:
+                    additionalProperties:
+                      type: string
+                    description: EvictionSoftGracePeriod is the grace period per soft
+                      eviction signal.
+                    type: object
+                  extraArgs:
+                    description: |-
+                      ExtraArgs are additional kubelet flags, rendered into the kubeadm
+                      JoinConfiguration's nodeRegistration.kubeletExtraArgs.
+                    items:
+                      description: KubeletArg is a single kubelet flag in kubeadm
+                        v1beta4's name/value shape.
+                      properties:
+                        name:
+                          type: string
+                        value:
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                  kubeReserved:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: KubeReserved is resources reserved for Kubernetes
+                      system components.
+                    type: object
+                  maxPods:
+                    description: |-
+                      MaxPods caps pods per node. Also the "pods" resource Karpenter bin-packs
+                      against.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  systemReserved:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: SystemReserved is resources reserved for OS system
+                      daemons.
+                    type: object
+                type: object
+              locations:
+                description: |-
+                  Locations bounds which Hetzner locations this class may use, e.g.
+                  [nbg1, fsn1]. Empty means every location in the network's zone.
+
+                  This is the infrastructure bound ("the private network reaches here").
+                  A NodePool's topology.kubernetes.io/region requirement is the policy
+                  bound ("this pool may use here"), and narrows it further. Both exist
+                  because they answer different questions.
+                items:
+                  pattern: ^[a-z]{2,4}[0-9]$
+                  type: string
+                maxItems: 10
+                type: array
+              networkSelector:
+                description: |-
+                  NetworkSelector picks the private network to attach. Without it a node
+                  has no route to the API server's private endpoint.
+                properties:
+                  id:
+                    format: int64
+                    type: integer
+                  name:
+                    type: string
+                type: object
+                x-kubernetes-validations:
+                - message: exactly one of name or id must be set
+                  rule: has(self.name) != has(self.id)
+              placementGroup:
+                description: |-
+                  PlacementGroup optionally puts nodes in a spread placement group.
+
+                  Unset by default, and that default is deliberate: Hetzner caps spread
+                  placement groups at 10 servers, and the eleventh create returns
+                  placement_error, which is indistinguishable from stock exhaustion and
+                  cannot be worked around by trying a different server type.
+                properties:
+                  id:
+                    format: int64
+                    type: integer
+                  name:
+                    type: string
+                type: object
+                x-kubernetes-validations:
+                - message: exactly one of name or id must be set
+                  rule: has(self.name) != has(self.id)
+              publicIPv4:
+                default: true
+                description: |-
+                  PublicIPv4 controls whether nodes get a primary IPv4.
+
+                  A primary IPv4 is billed separately, so disabling it saves money, but
+                  then nodes need egress via NAT to reach apt and registries. When false,
+                  the IPv4 surcharge is dropped from the offering price.
+                type: boolean
+              publicIPv6:
+                default: true
+                description: PublicIPv6 controls whether nodes get a primary IPv6.
+                type: boolean
+              serverLabels:
+                additionalProperties:
+                  type: string
+                description: |-
+                  ServerLabels are extra hcloud labels for cost allocation and filtering.
+                  Merged under the provider-managed labels, which always win.
+                maxProperties: 32
+                type: object
+              sshKeySelectors:
+                description: |-
+                  SSHKeySelectors picks SSH keys to install.
+
+                  Hashed rather than compared live, because hcloud does not return
+                  ssh_keys on a server GET.
+                items:
+                  description: SSHKeySelectorTerm selects a Hetzner SSH key by name
+                    or id.
+                  properties:
+                    id:
+                      format: int64
+                      type: integer
+                    name:
+                      type: string
+                  type: object
+                  x-kubernetes-validations:
+                  - message: exactly one of name or id must be set
+                    rule: has(self.name) != has(self.id)
+                maxItems: 10
+                type: array
+            required:
+            - bootstrap
+            - imageSelector
+            type: object
+          status:
+            description: HCloudNodeClassStatus is the resolved, observed state of
+              the class.
+            properties:
+              apiServerEndpoint:
+                description: |-
+                  APIServerEndpoint is the join endpoint in use, whether discovered from
+                  kube-public/cluster-info or overridden in the spec.
+                type: string
+              caCertHashes:
+                description: |-
+                  CACertHashes are the CA public-key pins in use.
+
+                  Safe to publish: this is a public key pin, served anonymously from
+                  kube-public/cluster-info to any unauthenticated client. Surfacing it
+                  makes "is my join configuration right?" answerable with kubectl.
+                items:
+                  type: string
+                type: array
+              conditions:
+                items:
+                  description: Condition aliases the upstream type and adds additional
+                    helper methods
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              firewalls:
+                description: Firewalls are the resolved firewalls.
+                items:
+                  description: FirewallStatus is a resolved Hetzner firewall.
+                  properties:
+                    id:
+                      format: int64
+                      type: integer
+                    name:
+                      type: string
+                  required:
+                  - id
+                  type: object
+                type: array
+              image:
+                description: Image is the resolved base image.
+                properties:
+                  architecture:
+                    type: string
+                  created:
+                    type: string
+                  description:
+                    type: string
+                  id:
+                    format: int64
+                    type: integer
+                  name:
+                    type: string
+                required:
+                - id
+                type: object
+              locations:
+                description: Locations are the in-scope locations and their datacenters.
+                items:
+                  description: LocationStatus is an in-scope Hetzner location.
+                  properties:
+                    datacenters:
+                      items:
+                        type: string
+                      type: array
+                    name:
+                      type: string
+                    networkZone:
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              network:
+                description: Network is the resolved private network.
+                properties:
+                  id:
+                    format: int64
+                    type: integer
+                  ipRange:
+                    type: string
+                  name:
+                    type: string
+                  zone:
+                    description: Zone is the network zone, which bounds which locations
+                      can attach.
+                    type: string
+                required:
+                - id
+                type: object
+              placementGroup:
+                description: PlacementGroup is the resolved placement group, if any.
+                properties:
+                  id:
+                    format: int64
+                    type: integer
+                  name:
+                    type: string
+                  serverCount:
+                    description: |-
+                      ServerCount is the current membership. Hetzner caps spread groups at
+                      10, and exceeding that returns placement_error on create, so this is
+                      surfaced to make the ceiling visible before it is hit.
+                    type: integer
+                  type:
+                    type: string
+                required:
+                - id
+                type: object
+              sshKeys:
+                description: SSHKeys are the resolved SSH keys.
+                items:
+                  description: SSHKeyStatus is a resolved Hetzner SSH key.
+                  properties:
+                    fingerprint:
+                      type: string
+                    id:
+                      format: int64
+                      type: integer
+                    name:
+                      type: string
+                  required:
+                  - id
+                  type: object
+                type: array
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
