@@ -130,15 +130,7 @@ func (u *Unavailable) Code(serverType, location string) (string, bool) {
 // Len reports how many pairs are currently suppressed, expiring stale entries
 // as a side effect so the map does not grow without bound.
 func (u *Unavailable) Len() int {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	now := u.now()
-	for k, e := range u.items {
-		if !now.Before(e.until) {
-			delete(u.items, k)
-		}
-	}
-	return len(u.items)
+	return len(u.Snapshot())
 }
 
 // Suppression is one currently suppressed pair.

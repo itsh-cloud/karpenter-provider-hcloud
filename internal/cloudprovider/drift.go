@@ -185,21 +185,7 @@ func serverDrift(nodeClass *v1alpha1.HCloudNodeClass, srv *hcloudapi.Server) clo
 // sameSet reports whether two id sets hold the same members, ignoring order and
 // duplicates.
 func sameSet(a, b []int64) bool {
-	seen := make(map[int64]struct{}, len(a))
-	for _, id := range a {
-		seen[id] = struct{}{}
-	}
-	other := make(map[int64]struct{}, len(b))
-	for _, id := range b {
-		other[id] = struct{}{}
-	}
-	if len(seen) != len(other) {
-		return false
-	}
-	for id := range seen {
-		if _, ok := other[id]; !ok {
-			return false
-		}
-	}
-	return true
+	x := slices.Sorted(slices.Values(a))
+	y := slices.Sorted(slices.Values(b))
+	return slices.Equal(slices.Compact(x), slices.Compact(y))
 }

@@ -157,6 +157,12 @@ func (p *Provider) Refresh(ctx context.Context) error {
 	// beside offering_unavailable it shows where what Hetzner says and what
 	// Hetzner does disagree, which is the only honest use for a flag that is
 	// neither sufficient nor necessary.
+	//
+	// Reset first, for the same reason the suppression gauge is rebuilt rather
+	// than updated: a server type or location that disappears from the Hetzner
+	// catalog would otherwise keep its last published value forever, which
+	// reads as a live offering long after it stopped being one.
+	metrics.OfferingAvailabilityFlag.Reset()
 	for _, st := range serverTypes {
 		for _, l := range st.Locations {
 			metrics.OfferingAvailabilityFlag.WithLabelValues(st.Name, l.Location).Set(boolToFloat(l.Available))

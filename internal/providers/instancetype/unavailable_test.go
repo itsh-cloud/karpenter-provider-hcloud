@@ -125,3 +125,50 @@ func TestConcurrentAccess(t *testing.T) {
 		t.Error("lost a mark under concurrency")
 	}
 }
+
+// TestSnapshotReapsExpiredEntries.
+//
+// Snapshot is what the metric sync rebuilds from, so an expired entry lingering
+// here becomes a gauge that reads as a permanent stockout long after stock
+// returned. That is the exact question this project exists to answer correctly,
+// so it is the reaping, not the reporting, that matters.
+func TestSnapshotReapsExpiredEntries(t *testing.T) {
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	u := NewUnavailableWithOptions(5*time.Minute, fixedClock(&now))
+
+	u.Mark("cx33", "nbg1", "resource_unavailable")
+	u.Mark("cx43", "fsn1", "placement_error")
+
+	got := u.Snapshot()
+	if len(got) != 2 {
+		t.Fatalf("Snapshot() = %+v, want both suppressions", got)
+	}
+	for _, s := range got {
+		if s.ServerType == "" || s.Location == "" || s.Code == "" {
+			t.Errorf("Snapshot() entry %+v is missing a label the gauge needs", s)
+		}
+	}
+
+	now = now.Add(6 * time.Minute)
+	if got := u.Snapshot(); len(got) != 0 {
+		t.Errorf("Snapshot() = %+v after expiry; a stale entry reads as a stockout that has already ended", got)
+	}
+}
+
+// TestLenAgreesWithSnapshot: both answer "what is suppressed right now", so a
+// divergence would mean two definitions of the same thing.
+func TestLenAgreesWithSnapshot(t *testing.T) {
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	u := NewUnavailableWithOptions(5*time.Minute, fixedClock(&now))
+
+	u.Mark("cx33", "nbg1", "resource_unavailable")
+	u.Mark("cx43", "nbg1", "resource_unavailable")
+	if u.Len() != len(u.Snapshot()) {
+		t.Errorf("Len() = %d but Snapshot() has %d entries", u.Len(), len(u.Snapshot()))
+	}
+
+	now = now.Add(6 * time.Minute)
+	if u.Len() != 0 || len(u.Snapshot()) != 0 {
+		t.Errorf("after expiry Len() = %d, Snapshot() has %d", u.Len(), len(u.Snapshot()))
+	}
+}

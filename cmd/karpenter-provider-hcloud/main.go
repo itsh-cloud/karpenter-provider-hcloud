@@ -21,7 +21,6 @@ import (
 	hcloudprovider "github.com/itsh-cloud/karpenter-provider-hcloud/internal/cloudprovider"
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/controllers"
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/hcloudapi"
-	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/metrics"
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/providers/bootstrap"
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/providers/catalog"
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/providers/instance"
@@ -90,7 +89,7 @@ func main() {
 	// rebuilt periodically rather than only written on failure. Without it a
 	// pair reads as permanently out of stock long after it recovered.
 	if err := op.Add(manager.RunnableFunc(func(ctx context.Context) error {
-		return metrics.SyncUnavailable(ctx, unavailable)
+		return instancetype.SyncUnavailable(ctx, unavailable)
 	})); err != nil {
 		log.FromContext(ctx).Error(err, "registering the offering availability metric sync")
 		os.Exit(1)

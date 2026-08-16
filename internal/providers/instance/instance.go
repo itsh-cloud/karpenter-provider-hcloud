@@ -188,27 +188,37 @@ func (p *Provider) Create(
 			}
 			// Anything else here will not succeed on another server type,
 			// because it is a statement about the request, not about capacity.
+			metrics.LaunchDuration.WithLabelValues(c.InstanceType.Name, c.Location, "failed").Observe(time.Since(started).Seconds())
 			return nil, nil, cloudprovider.NewCreateError(err, "CreateFailed", err.Error())
 
 		case hcloudapi.ClassQuota:
 			// A different server type does not help: the project is at a
 			// limit. Surfaced as insufficient capacity so core stops trying,
 			// rather than as a create error that would fail the NodeClaim.
+			metrics.LaunchDuration.WithLabelValues(c.InstanceType.Name, c.Location, "quota").Observe(time.Since(started).Seconds())
 			return nil, nil, cloudprovider.NewInsufficientCapacityError(err)
 
 		case hcloudapi.ClassFatal:
 			log.FromContext(ctx).Error(err, "the Hetzner credential was rejected while creating a server; "+
 				"every retry burns rate limit shared with the CCM and the CSI driver")
+			metrics.LaunchDuration.WithLabelValues(c.InstanceType.Name, c.Location, "credential").Observe(time.Since(started).Seconds())
 			return nil, nil, cloudprovider.NewCreateError(err, "CredentialRejected", err.Error())
 
 		default:
 			// Transient. Return rather than burning the remaining candidates
 			// on what is probably a network problem; core retries the whole
 			// launch with backoff.
+			metrics.LaunchDuration.WithLabelValues(c.InstanceType.Name, c.Location, "transient").Observe(time.Since(started).Seconds())
 			return nil, nil, fmt.Errorf("creating server, %w", err)
 		}
 	}
 
+	// Recorded on the exhausted path too. A Create that walked eight
+	// out-of-stock candidates is the slowest thing this provider does and the
+	// case the bucket layout was chosen for; observing only on success makes
+	// the result label a constant and hides exactly that.
+	metrics.LaunchDuration.WithLabelValues(candidates[0].InstanceType.Name, candidates[0].Location, "exhausted").
+		Observe(time.Since(started).Seconds())
 	return nil, nil, cloudprovider.NewInsufficientCapacityError(
 		fmt.Errorf("no capacity after %d attempts across %d candidates, last error: %w", attempts, len(candidates), lastErr))
 }
