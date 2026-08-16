@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/cloudprovider"
+	coresched "sigs.k8s.io/karpenter/pkg/controllers/provisioning/scheduling"
 	"sigs.k8s.io/karpenter/pkg/scheduling"
 
 	"github.com/itsh-cloud/karpenter-provider-hcloud/api/v1alpha1"
@@ -578,5 +579,283 @@ func TestProviderIDRoundTrip(t *testing.T) {
 		if err != nil || got != tc.want {
 			t.Errorf("ServerIDFromProviderID(%q) = %d, %v; want %d", tc.in, got, err, tc.want)
 		}
+	}
+}
+
+// coreNodeClaim builds a NodeClaim the way karpenter core actually does.
+//
+// Hand-building one is the trap this test exists to avoid. Core's
+// NewNodeClaimTemplate stamps a nodeclass label into the template's labels and
+// then folds those labels into spec.requirements, so every real NodeClaim
+// carries `karpenter.itsh.dev/hcloudnodeclass In [<name>]`. A hand-written
+// fixture has no requirements at all, which makes every requirement filter
+// trivially satisfiable and hides exactly the class of bug this covers.
+func coreNodeClaim(t *testing.T, types []*cloudprovider.InstanceType, extra ...corev1.NodeSelectorRequirement) *karpv1.NodeClaim {
+	t.Helper()
+	nodePool := &karpv1.NodePool{
+		ObjectMeta: metav1.ObjectMeta{Name: "autoscaled-general-nbg1"},
+		Spec: karpv1.NodePoolSpec{
+			Template: karpv1.NodeClaimTemplate{
+				Spec: karpv1.NodeClaimTemplateSpec{
+					NodeClassRef: &karpv1.NodeClassReference{
+						Group: v1alpha1.Group, Kind: "HCloudNodeClass", Name: "default",
+					},
+					Requirements: []karpv1.NodeSelectorRequirementWithMinValues{},
+				},
+			},
+		},
+	}
+	for _, r := range extra {
+		nodePool.Spec.Template.Spec.Requirements = append(nodePool.Spec.Template.Spec.Requirements,
+			karpv1.NodeSelectorRequirementWithMinValues{Key: r.Key, Operator: r.Operator, Values: r.Values})
+	}
+	nct := coresched.NewNodeClaimTemplate(nodePool)
+	// ToNodeClaim serialises InstanceTypeOptions into an instance-type
+	// requirement, which is how a real NodeClaim carries the candidate list the
+	// scheduler settled on. Leaving it empty yields `instance-type In []`, which
+	// matches nothing, so the fixture would be unlike anything production makes.
+	nct.InstanceTypeOptions = types
+	nc := nct.ToNodeClaim()
+	nc.Name = "autoscaled-general-nbg1-abcde"
+	return nc
+}
+
+// TestRealNodeClaimsProduceCandidates.
+//
+// The regression test for a filter that rejected EVERY instance type for EVERY
+// real NodeClaim. Requirements.Compatible iterates the ARGUMENT's keys and
+// rejects any non-well-known key the RECEIVER does not declare, so calling it
+// as it.Requirements.Compatible(nodeClaimRequirements) fails on the nodeclass
+// label core stamps into every NodeClaim. Create then reported insufficient
+// capacity, core deleted the NodeClaim, and the cluster churned forever with
+// every pod pending.
+func TestRealNodeClaimsProduceCandidates(t *testing.T) {
+	p := NewProvider(newFakeServers(), instancetype.NewUnavailable(), testCluster)
+	types := []*cloudprovider.InstanceType{
+		instanceType("cx33", 4, 8, 8.49, "nbg1", "fsn1"),
+		instanceType("cx43", 8, 16, 15.99, "nbg1"),
+	}
+
+	claim := coreNodeClaim(t, types)
+	got := p.orderedCandidates(claim, types)
+	if len(got) == 0 {
+		var keys []string
+		for _, r := range claim.Spec.Requirements {
+			keys = append(keys, r.Key)
+		}
+		t.Fatalf("a NodeClaim built the way core builds them produced NO candidates; "+
+			"nothing would ever provision. Its requirement keys were %v", keys)
+	}
+	if got[0].InstanceType.Name != "cx33" {
+		t.Errorf("cheapest candidate = %q, want cx33", got[0].InstanceType.Name)
+	}
+}
+
+// TestRequirementsStillConstrain is the other half: the fix must not simply
+// accept everything. Each of these must narrow the candidate set.
+func TestRequirementsStillConstrain(t *testing.T) {
+	p := NewProvider(newFakeServers(), instancetype.NewUnavailable(), testCluster)
+	types := []*cloudprovider.InstanceType{
+		instanceType("cx33", 4, 8, 8.49, "nbg1", "fsn1"),
+		instanceType("cx43", 8, 16, 15.99, "nbg1"),
+	}
+
+	for _, tc := range []struct {
+		name string
+		req  corev1.NodeSelectorRequirement
+		want []string
+	}{
+		{"regionPinned", corev1.NodeSelectorRequirement{
+			Key: corev1.LabelTopologyRegion, Operator: corev1.NodeSelectorOpIn, Values: []string{"fsn1"},
+		}, []string{"cx33@fsn1"}},
+		{"typePinned", corev1.NodeSelectorRequirement{
+			Key: corev1.LabelInstanceTypeStable, Operator: corev1.NodeSelectorOpIn, Values: []string{"cx43"},
+		}, []string{"cx43@nbg1"}},
+		{"impossibleType", corev1.NodeSelectorRequirement{
+			Key: corev1.LabelInstanceTypeStable, Operator: corev1.NodeSelectorOpIn, Values: []string{"does-not-exist"},
+		}, nil},
+		{"impossibleRegion", corev1.NodeSelectorRequirement{
+			Key: corev1.LabelTopologyRegion, Operator: corev1.NodeSelectorOpIn, Values: []string{"hil"},
+		}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []string
+			for _, c := range p.orderedCandidates(coreNodeClaim(t, types, tc.req), types) {
+				got = append(got, c.InstanceType.Name+"@"+c.Location)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("candidates = %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("candidates = %v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestUnavailableOfferingsAreSkipped: the unavailability cache is only useful
+// if the candidate list actually honours it.
+func TestUnavailableOfferingsAreSkipped(t *testing.T) {
+	p := NewProvider(newFakeServers(), instancetype.NewUnavailable(), testCluster)
+	types := []*cloudprovider.InstanceType{instanceType("cx33", 4, 8, 8.49, "nbg1")}
+	types[0].Offerings[0].Available = false
+
+	if got := p.orderedCandidates(coreNodeClaim(t, types), types); len(got) != 0 {
+		t.Errorf("candidates = %+v, want none: the only offering is unavailable", got)
+	}
+}
+
+// TestCandidateOrderIsStableAcrossInputOrder.
+//
+// The previous version of this test fed ONE input order and asserted the output
+// did not change, which sort.SliceStable satisfies with no tiebreaks at all. To
+// test the tiebreaks, the same set has to arrive in different orders.
+func TestCandidateOrderIsStableAcrossInputOrder(t *testing.T) {
+	p := NewProvider(newFakeServers(), instancetype.NewUnavailable(), testCluster)
+	a := []*cloudprovider.InstanceType{
+		instanceType("cx43", 8, 16, 15.99, "fsn1", "nbg1"),
+		instanceType("cpx31", 8, 16, 15.99, "nbg1", "fsn1"),
+	}
+	b := []*cloudprovider.InstanceType{
+		instanceType("cpx31", 8, 16, 15.99, "fsn1", "nbg1"),
+		instanceType("cx43", 8, 16, 15.99, "nbg1", "fsn1"),
+	}
+
+	render := func(cs []Candidate) []string {
+		out := make([]string, 0, len(cs))
+		for _, c := range cs {
+			out = append(out, c.InstanceType.Name+"@"+c.Location)
+		}
+		return out
+	}
+	first := render(p.orderedCandidates(coreNodeClaim(t, a), a))
+	second := render(p.orderedCandidates(coreNodeClaim(t, b), b))
+
+	if len(first) != len(second) || len(first) == 0 {
+		t.Fatalf("candidate sets differ in size: %v vs %v", first, second)
+	}
+	for i := range first {
+		if first[i] != second[i] {
+			t.Fatalf("equally priced candidates ordered differently for different input orders:\n  %v\n  %v\n"+
+				"a replacement would pick a different type each pass and the fleet would never settle", first, second)
+		}
+	}
+}
+
+// TestIsManagedByFailsClosed pins the clause the file calls the single most
+// important line in this provider. Delete has no cluster-name guard of its own,
+// so an empty name must never match a server that merely has labels.
+func TestIsManagedByFailsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		srv         *hcloudapi.Server
+		clusterName string
+	}{
+		{"nilServer", nil, testCluster},
+		{"noLabels", &hcloudapi.Server{ID: 1}, testCluster},
+		{"emptyLabels", &hcloudapi.Server{ID: 1, Labels: map[string]string{}}, testCluster},
+		{"labelsButNotOurs", &hcloudapi.Server{ID: 1, Labels: map[string]string{"env": "prod"}}, testCluster},
+		{"otherCluster", &hcloudapi.Server{ID: 1, Labels: map[string]string{hcloudapi.LabelManagedBy: "other"}}, testCluster},
+		// The important one: an empty cluster name must not match an empty or
+		// absent label value.
+		{"emptyClusterName", &hcloudapi.Server{ID: 1, Labels: map[string]string{"env": "prod"}}, ""},
+		{"emptyClusterNameEmptyLabel", &hcloudapi.Server{ID: 1, Labels: map[string]string{hcloudapi.LabelManagedBy: ""}}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.srv.IsManagedBy(tc.clusterName) {
+				t.Errorf("IsManagedBy(%q) = true for %+v; this gates every delete and must fail closed", tc.clusterName, tc.srv)
+			}
+		})
+	}
+
+	owned := &hcloudapi.Server{ID: 1, Labels: map[string]string{hcloudapi.LabelManagedBy: testCluster}}
+	if !owned.IsManagedBy(testCluster) {
+		t.Error("IsManagedBy = false for a server this cluster genuinely owns")
+	}
+}
+
+// TestCreateInvalidatesTheListCacheOnSuccess.
+//
+// Core's garbage collector compares its NodeClaims against List. A cache that
+// predates a create shows no instance behind a live NodeClaim.
+func TestCreateInvalidatesTheListCacheOnSuccess(t *testing.T) {
+	f := newFakeServers()
+	f.listed = []*hcloudapi.Server{}
+	p := NewProvider(f, instancetype.NewUnavailable(), testCluster)
+
+	// Warm the cache.
+	if _, err := p.List(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	before := f.listCall
+
+	types := []*cloudprovider.InstanceType{instanceType("cx33", 4, 8, 8.49, "nbg1")}
+	srv, _, err := p.Create(context.Background(), testNodeClass(), coreNodeClaim(t, types), types, "#cloud-config")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	f.listed = []*hcloudapi.Server{srv}
+
+	got, err := p.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.listCall == before {
+		t.Fatal("List was served from a cache that predates the create; core's GC would see no instance behind a live NodeClaim")
+	}
+	if len(got) != 1 {
+		t.Errorf("List = %+v after creating one server, want it present", got)
+	}
+}
+
+// TestAdoptedServerReportsItsOwnType.
+//
+// The adopted server's type can differ from the candidate being attempted when
+// the ordering changed between the lost create and the retry. Core never
+// re-reads capacity from the Node, so publishing the attempted type binpacks
+// every future pod against a machine that does not exist.
+func TestAdoptedServerReportsItsOwnType(t *testing.T) {
+	f := newFakeServers()
+	f.byName["autoscaled-general-nbg1-abcde"] = &hcloudapi.Server{
+		// Deliberately NOT the type the first attempt will try.
+		//
+		// Candidates are ordered cheapest-first, so attempt one is cx33. The
+		// server that actually exists is a cx43, which is what a create whose
+		// response was lost under a DIFFERENT ordering would have left behind.
+		// If the fixture made these the same type, returning the attempted
+		// candidate instead of the adopted one would produce an identical
+		// answer and the test would prove nothing.
+		ID: 555, Name: "autoscaled-general-nbg1-abcde", ServerType: "cx43", Location: "nbg1",
+		Labels: map[string]string{
+			hcloudapi.LabelManagedBy: testCluster,
+			hcloudapi.LabelNodeClaim: "autoscaled-general-nbg1-abcde",
+		},
+	}
+	// Every attempt collides with the existing name.
+	f.fail = func(int, hcloudapi.CreateServerRequest) error {
+		return capacityErr(hcloud.ErrorCodeUniquenessError)
+	}
+	p := NewProvider(f, instancetype.NewUnavailable(), testCluster)
+
+	types := []*cloudprovider.InstanceType{
+		instanceType("cx43", 8, 16, 15.99, "nbg1"),
+		instanceType("cx33", 4, 8, 8.49, "nbg1"),
+	}
+	srv, it, err := p.Create(context.Background(), testNodeClass(), coreNodeClaim(t, types), types, "#cloud-config")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if srv.ServerType != "cx43" {
+		t.Fatalf("adopted %q, want the existing cx43", srv.ServerType)
+	}
+	if it == nil || it.Name != "cx43" {
+		name := "<nil>"
+		if it != nil {
+			name = it.Name
+		}
+		t.Errorf("returned instance type %q for an adopted cx43; core never re-reads capacity from the Node, "+
+			"so every future pod would be binpacked against the wrong machine", name)
 	}
 }

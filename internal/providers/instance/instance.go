@@ -117,6 +117,10 @@ func (p *Provider) Create(
 
 		srv, err := p.servers.Create(ctx, req)
 		if err == nil {
+			// So the next List reflects a server we just made. Without this,
+			// core's garbage collector can read a cached listing that predates
+			// the create and reap the NodeClaim behind a live node.
+			p.cache.invalidate()
 			return srv, c.InstanceType, nil
 		}
 		lastErr = err
@@ -140,10 +144,30 @@ func (p *Provider) Create(
 				// A previous attempt's HTTP response was lost, but the server
 				// was created. Adopt it rather than failing: the alternative
 				// leaks a running, billing server that nothing owns.
-				if adopted, aErr := p.adopt(ctx, req.Name, nodeClaim); aErr == nil && adopted != nil {
-					log.FromContext(ctx).Info("adopted a server from a lost create response", "server", adopted.Name, "id", adopted.ID)
+				adopted, aErr := p.adopt(ctx, req.Name, nodeClaim)
+				if aErr != nil {
+					// Loud, always. A refusal here means something already
+					// holds this name and is not ours, which is the most
+					// security-relevant thing this package can observe;
+					// swallowing it reports a generic create failure instead.
+					log.FromContext(ctx).Error(aErr, "refusing to adopt an existing server", "server", req.Name)
+				} else if adopted != nil {
+					// The type of the server we ACTUALLY adopted, not the
+					// candidate this attempt happened to be trying. The
+					// ordering can differ between the lost create and this
+					// retry, and core never re-reads capacity from the Node:
+					// publishing the wrong type binpacks every future pod
+					// against a machine that does not exist.
+					adoptedType := findInstanceType(instanceTypes, adopted.ServerType)
+					if adoptedType == nil {
+						log.FromContext(ctx).Info("adopted a server whose type is not in the current catalog; "+
+							"publishing no capacity rather than a wrong one",
+							"server", adopted.Name, "serverType", adopted.ServerType)
+					}
+					log.FromContext(ctx).Info("adopted a server from a lost create response",
+						"server", adopted.Name, "id", adopted.ID, "serverType", adopted.ServerType)
 					p.cache.invalidate()
-					return adopted, c.InstanceType, nil
+					return adopted, adoptedType, nil
 				}
 			}
 			// Anything else here will not succeed on another server type,
@@ -173,6 +197,29 @@ func (p *Provider) Create(
 		fmt.Errorf("no capacity after %d attempts across %d candidates, last error: %w", attempts, len(candidates), lastErr))
 }
 
+// HasCandidates reports whether any (type, location) pair could satisfy this
+// NodeClaim, without ordering them or touching the Hetzner API.
+//
+// Exists so the caller can avoid minting a join token for a NodeClaim that has
+// nowhere to go.
+func (p *Provider) HasCandidates(nodeClaim *karpv1.NodeClaim, instanceTypes []*cloudprovider.InstanceType) bool {
+	return len(p.orderedCandidates(nodeClaim, instanceTypes)) > 0
+}
+
+// findInstanceType returns the catalog entry for a server type, or nil.
+//
+// nil is a meaningful answer rather than a failure: an adopted server may be a
+// type the current catalog no longer offers, and publishing no capacity is
+// better than publishing another type's.
+func findInstanceType(instanceTypes []*cloudprovider.InstanceType, name string) *cloudprovider.InstanceType {
+	for _, it := range instanceTypes {
+		if it.Name == name {
+			return it
+		}
+	}
+	return nil
+}
+
 // adopt recovers the server from a create whose response never arrived.
 //
 // Matched on BOTH our ownership label and the NodeClaim label, never on the
@@ -200,7 +247,23 @@ func (p *Provider) orderedCandidates(nodeClaim *karpv1.NodeClaim, instanceTypes 
 
 	var out []Candidate
 	for _, it := range instanceTypes {
-		if err := it.Requirements.Compatible(reqs, scheduling.AllowUndefinedWellKnownLabels); err != nil {
+		// Intersects, NOT Requirements.Compatible, and the direction matters
+		// enough to fail every provision if it is wrong.
+		//
+		// Compatible iterates the ARGUMENT's keys and rejects any non-well-known
+		// key the RECEIVER does not declare. Core stamps a nodeclass label into
+		// every NodeClaim's requirements, karpenter.itsh.dev/hcloudnodeclass In
+		// [<name>], via NewNodeClaimTemplate. No instance type declares that key
+		// and it is not a well-known label, so it.Requirements.Compatible(reqs)
+		// rejects EVERY type for EVERY real NodeClaim. Create then reports
+		// insufficient capacity, core deletes the NodeClaim, and the cluster
+		// churns forever with every pod pending and the metric blaming Hetzner.
+		//
+		// This is core's own filter, from provisioning/scheduling/nodeclaim.go:
+		// Intersects at the type level, IsCompatible at the offering level.
+		// Matching it is what makes "a candidate core would accept" mean the
+		// same thing on both sides.
+		if it.Requirements.Intersects(reqs) != nil {
 			continue
 		}
 		// Resources are checked once per type rather than per offering: an
@@ -212,14 +275,20 @@ func (p *Provider) orderedCandidates(nodeClaim *karpv1.NodeClaim, instanceTypes 
 			if !o.Available {
 				continue
 			}
-			if err := o.Requirements.Compatible(reqs, scheduling.AllowUndefinedWellKnownLabels); err != nil {
+			if !reqs.IsCompatible(o.Requirements, scheduling.AllowUndefinedWellKnownLabels) {
 				continue
 			}
-			loc := o.Requirements.Get(corev1RegionLabel).Any()
-			if loc == "" {
+			// Read as a single definite value, never Any().
+			//
+			// Requirements.Get on a missing key returns an Exists requirement,
+			// whose Any() is a RANDOM number rather than the empty string, so an
+			// offering without a region would silently order a server in a
+			// location named something like "8198044085188639281".
+			region := o.Requirements.Get(corev1RegionLabel)
+			if region.Len() != 1 {
 				continue
 			}
-			out = append(out, Candidate{InstanceType: it, Location: loc, Price: o.Price})
+			out = append(out, Candidate{InstanceType: it, Location: region.Values()[0], Price: o.Price})
 		}
 	}
 

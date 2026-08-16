@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // DefaultCreateTimeout bounds how long a create waits for its action to settle.
@@ -175,7 +176,7 @@ func (s *serverClient) Create(ctx context.Context, req CreateServerRequest) (*Se
 
 	actions := append([]*hcloud.Action{result.Action}, result.NextActions...)
 	if err := s.c.Action.WaitFor(waitCtx, actions...); err != nil {
-		s.deleteQuietly(context.WithoutCancel(ctx), result.Server.ID)
+		s.deleteQuietly(context.WithoutCancel(ctx), result.Server.ID, req.Name)
 		return nil, fmt.Errorf("waiting for server %q to be created: %w", req.Name, err)
 	}
 
@@ -197,10 +198,18 @@ func (s *serverClient) Create(ctx context.Context, req CreateServerRequest) (*Se
 // Deliberately takes a context detached from the failed operation: the common
 // reason to be here is a create that timed out, and reusing that cancelled
 // context would skip the cleanup exactly when it is needed.
-func (s *serverClient) deleteQuietly(ctx context.Context, id int64) {
+func (s *serverClient) deleteQuietly(ctx context.Context, id int64, name string) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	_, _, _ = s.c.Server.DeleteWithResult(ctx, &hcloud.Server{ID: id})
+	if _, _, err := s.c.Server.DeleteWithResult(ctx, &hcloud.Server{ID: id}); err != nil {
+		// Quiet about the happy path, never about this. A failed cleanup leaves
+		// a running, billing server that booted with a valid join token, so it
+		// will register as a Node with no NodeClaim behind it. Nothing else
+		// reports it, which is exactly why it has to be said here.
+		log.FromContext(ctx).Error(err, "FAILED to remove the leftover server after a failed create; "+
+			"it is still running and will join the cluster unowned",
+			"server", name, "id", id)
+	}
 }
 
 func (s *serverClient) Delete(ctx context.Context, id int64) error {

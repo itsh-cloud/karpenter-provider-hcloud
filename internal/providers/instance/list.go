@@ -105,7 +105,22 @@ func (p *Provider) List(ctx context.Context) ([]*hcloudapi.Server, error) {
 		// control plane. Every caller of this feeds deletion decisions.
 		return nil, errNoClusterName
 	}
-	return p.cache.list(ctx, hcloudapi.ManagedBySelector(p.clusterName))
+	servers, err := p.cache.list(ctx, hcloudapi.ManagedBySelector(p.clusterName))
+	if err != nil {
+		return nil, err
+	}
+	// Re-checked in process even though the selector already filtered
+	// server-side, so all three read paths apply the same rule rather than one
+	// of them trusting a query string. This is what core's garbage collector
+	// compares its NodeClaims against, so anything wrongly present here is
+	// something core may adopt and later delete.
+	owned := make([]*hcloudapi.Server, 0, len(servers))
+	for _, srv := range servers {
+		if srv.IsManagedBy(p.clusterName) {
+			owned = append(owned, srv)
+		}
+	}
+	return owned, nil
 }
 
 // Get returns one server by provider id, or nil if it is gone.

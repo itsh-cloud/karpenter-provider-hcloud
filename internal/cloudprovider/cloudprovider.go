@@ -101,6 +101,15 @@ func (c *CloudProvider) Create(ctx context.Context, nodeClaim *karpv1.NodeClaim)
 		return nil, err
 	}
 
+	// Rendering mints a bootstrap token, which is a live cluster-join
+	// credential written into a kube-system Secret. Doing it before there is
+	// anything worth attempting would mint one for a NodeClaim that cannot be
+	// satisfied at all, on every retry, so the check comes first.
+	if !c.instances.HasCandidates(nodeClaim, instanceTypes) {
+		return nil, cloudprovider.NewInsufficientCapacityError(
+			fmt.Errorf("no instance type in this NodeClaim's requirements is offered in any location nodeclass %q allows", nodeClass.Name))
+	}
+
 	userData, err := c.bootstrapper.Render(ctx, nodeClass, nodeClaim)
 	if err != nil {
 		return nil, cloudprovider.NewCreateError(err, "BootstrapRenderFailed", err.Error())
