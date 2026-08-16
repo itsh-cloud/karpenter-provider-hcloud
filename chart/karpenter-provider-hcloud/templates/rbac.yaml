@@ -1,0 +1,191 @@
+{{/*
+Every grant below is derived from a call site in this provider or in the
+karpenter operator it embeds, not copied from another provider's chart. The
+comments say which, because an unexplained grant is one nobody can ever safely
+remove.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "karpenter-provider-hcloud.fullname" . }}
+  labels:
+    {{- include "karpenter-provider-hcloud.labels" . | nindent 4 }}
+rules:
+  # --- Informers started by karpenter's operator.setupIndexers ---
+  #
+  # These are NOT optional and they are not lazy. IndexField calls GetInformer,
+  # which starts a cluster-wide informer for the type, and the manager blocks in
+  # WaitForCacheSync until each one syncs. Omit any of them and the pod starts,
+  # serves neither /readyz nor any controller, and reports only "failed to sync
+  # caches" without naming the resource.
+  - apiGroups: [""]
+    resources: [pods, nodes]
+    verbs: [get, list, watch]
+  - apiGroups: [storage.k8s.io]
+    resources: [volumeattachments]
+    verbs: [get, list, watch]
+  - apiGroups: [karpenter.sh]
+    resources: [nodepools]
+    verbs: [get, list, watch]
+
+  # NodeClaims: read for the same indexers and for the termination gate, patch
+  # for the hash back-fill.
+  #
+  # The patch is the one most easily missed. Without it a hash generator change
+  # cannot re-stamp existing NodeClaims, so drift reads every node in the fleet
+  # as out of date and replaces all of them.
+  - apiGroups: [karpenter.sh]
+    resources: [nodeclaims]
+    verbs: [get, list, watch, patch]
+
+  # This provider's own NodeClass.
+  #
+  # patch on the main resource covers the termination finalizer as well: the
+  # separate finalizers subresource is only required under the
+  # OwnerReferencesPermissionEnforcement admission plugin, which is off by
+  # default. No delete: the provider never deletes a NodeClass, it only releases
+  # the finalizer that lets the operator's own delete proceed.
+  - apiGroups: [karpenter.itsh.dev]
+    resources: [hcloudnodeclasses]
+    verbs: [get, list, watch, patch]
+  - apiGroups: [karpenter.itsh.dev]
+    resources: [hcloudnodeclasses/status]
+    verbs: [patch]
+
+  # Events, from both recorders: karpenter's deduplicating one and the raw
+  # client-go one that operatorpkg's status controller uses.
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "karpenter-provider-hcloud.fullname" . }}
+  labels:
+    {{- include "karpenter-provider-hcloud.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "karpenter-provider-hcloud.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "karpenter-provider-hcloud.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+{{/* Leader election, in the release namespace. */}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "karpenter-provider-hcloud.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "karpenter-provider-hcloud.labels" . | nindent 4 }}
+rules:
+  # create cannot be restricted by name, because the object does not exist yet.
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [create]
+  # Everything afterwards is scoped to the one lease this release owns, so the
+  # grant cannot be used to disrupt another controller's leader election in the
+  # same namespace.
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    resourceNames: [{{ include "karpenter-provider-hcloud.leaderElectionName" . }}]
+    verbs: [get, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "karpenter-provider-hcloud.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "karpenter-provider-hcloud.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "karpenter-provider-hcloud.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "karpenter-provider-hcloud.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+{{/* Bootstrap tokens, in kube-system, which is where kubeadm requires them. */}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "karpenter-provider-hcloud.fullname" . }}-bootstrap-tokens
+  namespace: kube-system
+  labels:
+    {{- include "karpenter-provider-hcloud.labels" . | nindent 4 }}
+rules:
+  # create and delete, with NO get, list or watch.
+  #
+  # The absence of read is a security control, not an oversight. With read, this
+  # grant is a path to cluster-admin: mint a Secret of type
+  # kubernetes.io/service-account-token naming a privileged ServiceAccount, let
+  # the token controller populate it, then read the token back out. Without
+  # read, the same grant can create such a Secret but never learn its contents.
+  #
+  # Nothing here needs to read a Secret. Tokens are returned to the caller by
+  # the minter at creation time, and cleanup runs on the ownerReference to the
+  # NodeClaim plus kube-controller-manager's tokencleaner.
+  #
+  # delete cannot be narrowed by resourceNames: token Secret names embed a
+  # random token id that does not exist until the Secret is created.
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "karpenter-provider-hcloud.fullname" . }}-bootstrap-tokens
+  namespace: kube-system
+  labels:
+    {{- include "karpenter-provider-hcloud.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "karpenter-provider-hcloud.fullname" . }}-bootstrap-tokens
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "karpenter-provider-hcloud.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+{{/* Join parameters, discovered from the ConfigMap kubeadm publishes. */}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "karpenter-provider-hcloud.fullname" . }}-cluster-info
+  namespace: kube-public
+  labels:
+    {{- include "karpenter-provider-hcloud.labels" . | nindent 4 }}
+rules:
+  # get on exactly one ConfigMap, and deliberately no list or watch.
+  #
+  # That is why the controller reads it through the manager's API reader rather
+  # than its cached client: a cached read would build a namespace-wide ConfigMap
+  # informer, whose list this grant denies, and the manager would then hang in
+  # WaitForCacheSync. The ConfigMap is world-readable by design, so the narrow
+  # grant costs nothing.
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [cluster-info]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "karpenter-provider-hcloud.fullname" . }}-cluster-info
+  namespace: kube-public
+  labels:
+    {{- include "karpenter-provider-hcloud.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "karpenter-provider-hcloud.fullname" . }}-cluster-info
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "karpenter-provider-hcloud.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}

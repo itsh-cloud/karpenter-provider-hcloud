@@ -51,7 +51,7 @@ generate:
     controller-gen object paths="./api/..." output:object:dir=api/v1alpha1
     controller-gen crd paths="./api/..." output:crd:dir=config/crd
     just _vendor-karpenter-crds
-    cp config/crd/*.yaml chart/karpenter-provider-hcloud/templates/crds/
+    just _stamp-chart-crds
 
 # Same, but via a container so controller-gen need not be installed locally
 generate-docker:
@@ -60,7 +60,12 @@ generate-docker:
       controller-gen object paths=./api/... output:object:dir=api/v1alpha1 && \
       controller-gen crd paths=./api/... output:crd:dir=config/crd"
     just _vendor-karpenter-crds
-    cp config/crd/*.yaml chart/karpenter-provider-hcloud/templates/crds/
+    just _stamp-chart-crds
+
+# Render config/crd into the chart templates, adding the resource-policy that
+# stops `helm uninstall` taking every HCloudNodeClass with it.
+_stamp-chart-crds:
+    python3 hack/stamp-chart-crds.py
 
 _vendor-karpenter-crds:
     #!/usr/bin/env bash

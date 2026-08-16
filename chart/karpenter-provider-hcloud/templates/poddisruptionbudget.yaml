@@ -1,0 +1,20 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "karpenter-provider-hcloud.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "karpenter-provider-hcloud.labels" . | nindent 4 }}
+spec:
+  # An absolute maxUnavailable, not a percentage.
+  #
+  # A percentage is evaluated against the CURRENT replica count, so at one
+  # replica it rounds to allowing that replica to go, which is not a budget at
+  # all. With an absolute 1 and two replicas, a drain can take one and must wait
+  # for its replacement.
+  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "karpenter-provider-hcloud.selectorLabels" . | nindent 6 }}
+{{- end }}

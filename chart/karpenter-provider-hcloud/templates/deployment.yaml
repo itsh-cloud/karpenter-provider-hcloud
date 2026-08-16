@@ -1,0 +1,154 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "karpenter-provider-hcloud.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "karpenter-provider-hcloud.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "karpenter-provider-hcloud.selectorLabels" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Surge rather than unavailable: with a required anti-affinity and one
+      # replica per control plane node, a surge pod stays Pending until an old
+      # one goes, so the rollout is effectively serialised without ever taking
+      # the leader below one live candidate.
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        {{- include "karpenter-provider-hcloud.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # Restarts the pods when the rendered RBAC changes, so a widened or
+        # narrowed grant takes effect on upgrade instead of at the next
+        # unrelated restart.
+        checksum/rbac: {{ include (print $.Template.BasePath "/rbac.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "karpenter-provider-hcloud.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.dnsConfig }}
+      dnsConfig:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: controller
+          image: {{ include "karpenter-provider-hcloud.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- with .Values.controller.extraArgs }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            # The API server is reached through the in-cluster config that
+            # client-go builds from these injected variables and the projected
+            # service account token. No kubeconfig is mounted and none is
+            # accepted, so there is no second, staler source of cluster access.
+            - name: HCLOUD_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.hcloud.secretName }}
+                  key: {{ .Values.hcloud.secretKey }}
+            - name: LEADER_ELECTION_NAME
+              value: {{ include "karpenter-provider-hcloud.leaderElectionName" . }}
+            # Set explicitly so it always matches the namespace the leader
+            # election Role is bound in. Left empty, controller-runtime infers
+            # it from the projected token, which is the same value today but
+            # would silently diverge if the chart were ever installed with the
+            # service account in another namespace.
+            - name: LEADER_ELECTION_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: LOG_LEVEL
+              value: {{ .Values.controller.logLevel | quote }}
+            - name: METRICS_PORT
+              value: {{ .Values.controller.metricsPort | quote }}
+            - name: HEALTH_PROBE_PORT
+              value: {{ .Values.controller.healthProbePort | quote }}
+            {{- if .Values.controller.resources.limits }}
+            {{- if .Values.controller.resources.limits.memory }}
+            # Read back by the operator to set the Go soft memory limit to 90%
+            # of it, so the collector works harder before the kernel OOM kills
+            # the process rather than after.
+            - name: MEMORY_LIMIT
+              valueFrom:
+                resourceFieldRef:
+                  containerName: controller
+                  resource: limits.memory
+                  divisor: "1"
+            {{- end }}
+            {{- end }}
+            {{- with .Values.controller.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.controller.metricsPort }}
+              protocol: TCP
+            - name: health
+              containerPort: {{ .Values.controller.healthProbePort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 30
+            timeoutSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            timeoutSeconds: 30
+            # Generous, because /readyz gates on the informer caches syncing and
+            # on the karpenter.sh CRDs being resolvable. A slow first sync is
+            # not a reason to restart, and restarting makes it slower.
+            failureThreshold: 30
+          resources:
+            {{- toYaml .Values.controller.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # The root filesystem is read-only, so Go's temp handling and any
+        # library that reaches for a scratch file need somewhere to go.
+        - name: tmp
+          emptyDir: {}
+      terminationGracePeriodSeconds: 30

@@ -1,0 +1,23 @@
+apiVersion: v2
+name: karpenter-provider-hcloud
+description: Karpenter cloud provider for Hetzner Cloud
+type: application
+
+# Chart and app version move together: the chart templates the CRDs the binary
+# is compiled against, so a chart older or newer than its image can publish a
+# schema the controller cannot read.
+version: 0.1.0
+appVersion: "0.1.0"
+
+home: https://github.com/itsh-cloud/karpenter-provider-hcloud
+sources:
+  - https://github.com/itsh-cloud/karpenter-provider-hcloud
+keywords:
+  - karpenter
+  - autoscaling
+  - hetzner
+  - hcloud
+
+# 1.29 is where the apiserver stopped serving the v1beta2 APIs karpenter core
+# dropped, and matches the oldest control plane this provider is tested against.
+kubeVersion: ">=1.29.0-0"

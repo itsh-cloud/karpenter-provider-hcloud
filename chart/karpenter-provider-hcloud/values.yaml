@@ -1,0 +1,132 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/itsh-cloud/karpenter-provider-hcloud
+  # Defaults to .Chart.AppVersion. Pin a digest in production.
+  tag: ""
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# Hetzner Cloud API credential.
+#
+# Referenced from an existing Secret rather than templated from a value, so the
+# token never passes through a values file, a Helm release Secret, or `helm
+# get values`. The project token needs read-write on servers.
+hcloud:
+  secretName: hcloud
+  secretKey: token
+
+controller:
+  logLevel: info
+
+  # Both ports are served by the operator itself and are not configurable
+  # independently of it.
+  metricsPort: 8080
+  healthProbePort: 8081
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      # No CPU limit on purpose: throttling a leader-elected controller makes it
+      # miss its lease renewal and hand over for no reason. The memory limit is
+      # read back through MEMORY_LIMIT to set the Go soft memory limit.
+      memory: 512Mi
+
+  # Extra CLI args passed to the operator, e.g. ["--feature-gates=..."].
+  extraArgs: []
+  extraEnv: []
+
+# The controller must never run on a node it manages.
+#
+# It would be evicted by its own consolidation, and worse, during a disruption
+# it can be the pod being drained from the node whose deletion it is supposed to
+# be finishing. Control plane nodes are managed by terraform, not by this
+# provider, which makes them the one safe place to sit.
+nodeSelector:
+  node-role.kubernetes.io/control-plane: ""
+
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+
+affinity:
+  podAntiAffinity:
+    # Required, not preferred: two replicas on one node is not high
+    # availability, it is one node's worth of availability paying for two pods.
+    requiredDuringSchedulingIgnoredDuringExecution:
+      - topologyKey: kubernetes.io/hostname
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: karpenter-provider-hcloud
+
+topologySpreadConstraints: []
+
+# ndots=1 is REQUIRED, not a tuning knob.
+#
+# The egress policy permits DNS for exactly one name, api.hetzner.cloud. At the
+# cluster default of ndots:5 the resolver treats that as a partial name and
+# tries the search domains first, producing lookups like
+# api.hetzner.cloud.karpenter.svc.cluster.local, which the DNS proxy denies
+# because they are not the permitted name. With ndots:1 a name carrying three
+# dots is queried as an FQDN directly.
+#
+# Cilium's matchPattern would not save you here either: its wildcard matches
+# within a single label, so a pattern cannot cover the search-domain variants.
+dnsConfig:
+  options:
+    - name: ndots
+      value: "1"
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# system-cluster-critical, because a cluster that cannot scale out cannot
+# recover from load, and this pod being evicted under pressure is exactly when
+# it is needed.
+priorityClassName: system-cluster-critical
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+service:
+  # Metrics only. There is no webhook and no user-facing endpoint.
+  annotations: {}
+
+serviceMonitor:
+  enabled: false
+  additionalLabels: {}
+  interval: 30s
+
+# CRDs are rendered as ordinary templates so that `helm upgrade` applies schema
+# changes. They carry helm.sh/resource-policy: keep, so `helm uninstall` leaves
+# them and the HCloudNodeClasses they hold behind.
+crds:
+  enabled: true
