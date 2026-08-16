@@ -85,6 +85,8 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.hcloud.secretName }}
                   key: {{ .Values.hcloud.secretKey }}
+            - name: CLUSTER_NAME
+              value: {{ required "clusterName is required: it becomes the ownership label every delete gates on, so it must not be guessed" .Values.clusterName | quote }}
             - name: LEADER_ELECTION_NAME
               value: {{ include "karpenter-provider-hcloud.leaderElectionName" . }}
             # Set explicitly so it always matches the namespace the leader

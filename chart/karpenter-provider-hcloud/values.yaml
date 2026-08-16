@@ -25,6 +25,15 @@ hcloud:
   secretName: hcloud
   secretKey: token
 
+# Names this cluster, and therefore what this controller owns.
+#
+# REQUIRED: the binary refuses to start without it. It becomes the
+# karpenter.sh/managed-by label on every server, and that label is the ownership
+# check every destructive path gates on. Two clusters sharing one Hetzner
+# project MUST use different names, or each will consider the other's nodes its
+# own to delete.
+clusterName: ""
+
 controller:
   logLevel: info
 
