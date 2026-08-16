@@ -95,7 +95,6 @@ func runRenderUserData(args []string) error {
 		}
 		token = strings.TrimSpace(string(raw))
 	}
-	version := "1.34.7"
 
 	endpoint, hashes := "10.1.0.2:6443", []string{"sha256:" + fmt.Sprintf("%064d", 0)}
 	if c, err := newReadOnlyClient(); err == nil {
@@ -107,22 +106,19 @@ func runRenderUserData(args []string) error {
 		}
 	}
 
-	nc := &v1alpha1.HCloudNodeClass{
-		Spec: v1alpha1.HCloudNodeClassSpec{
-			Bootstrap: v1alpha1.BootstrapSpec{
-				OSFamily:          v1alpha1.OSFamilyDebian,
-				KubernetesVersion: version,
-			},
-		},
-	}
+	nc := &v1alpha1.HCloudNodeClass{}
 	if nodeClassPath != "" {
 		raw, err := os.ReadFile(nodeClassPath)
 		if err != nil {
 			return fmt.Errorf("reading NodeClass: %w", err)
 		}
-		nc = &v1alpha1.HCloudNodeClass{}
 		if err := yaml.Unmarshal(raw, nc); err != nil {
 			return fmt.Errorf("parsing NodeClass: %w", err)
+		}
+	} else {
+		nc.Spec.Bootstrap = v1alpha1.BootstrapSpec{
+			OSFamily:          v1alpha1.OSFamilyDebian,
+			KubernetesVersion: "1.34.7",
 		}
 	}
 

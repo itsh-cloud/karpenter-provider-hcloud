@@ -99,9 +99,7 @@ func (c *Controller) backfillNodeClaimHashes(ctx context.Context, nodeClass *v1a
 			continue
 		}
 		stored := nc.DeepCopy()
-		nc.Annotations = lo.Assign(nc.Annotations, map[string]string{
-			v1alpha1.AnnotationHashVersion: v1alpha1.HashVersion,
-		})
+		updates := map[string]string{v1alpha1.AnnotationHashVersion: v1alpha1.HashVersion}
 
 		// An already-drifted NodeClaim keeps its stale hash. It is already
 		// condemned and scheduled for replacement, and re-stamping it would
@@ -116,10 +114,9 @@ func (c *Controller) backfillNodeClaimHashes(ctx context.Context, nodeClass *v1a
 		// in-memory copy, which then lands in the diff guard below and turns a
 		// metadata patch into a spurious status rewrite.
 		if nc.StatusConditions(status.WithObservedOnly()).Get(karpv1.ConditionTypeDrifted) == nil {
-			nc.Annotations = lo.Assign(nc.Annotations, map[string]string{
-				v1alpha1.AnnotationHash: hash,
-			})
+			updates[v1alpha1.AnnotationHash] = hash
 		}
+		nc.Annotations = lo.Assign(nc.Annotations, updates)
 
 		if !equality.Semantic.DeepEqual(stored, nc) {
 			if err := c.kubeClient.Patch(ctx, nc, client.MergeFrom(stored)); err != nil {

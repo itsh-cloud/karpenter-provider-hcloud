@@ -145,13 +145,13 @@ func (v *Validation) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNo
 
 	if len(locations.inScope) == 0 {
 		nodeClass.Status.Locations = nil
-		reason, message := locations.emptyFailure(nodeClass)
+		reason, message := locations.emptyFailure()
 		conds.SetFalse(v1alpha1.ConditionTypeValidationSucceeded, reason, message)
 		return reconcile.Result{RequeueAfter: misconfiguredRequeue}, nil
 	}
 
 	nodeClass.Status.Locations = locations.inScope
-	if excluded := locations.excludedMessage(nodeClass); excluded != "" {
+	if excluded := locations.excludedMessage(); excluded != "" {
 		// True, not False: the class can still place nodes, and taking the
 		// whole NodePool down over one unusable entry in a list of three turns
 		// an editing mistake into an outage. But a silently narrowed location
@@ -197,6 +197,10 @@ type scope struct {
 	// asked for is the zone bound doing its job and is not news; excluding one
 	// they wrote down by hand means what they wrote is not what they got.
 	explicit bool
+	// zone is the resolved private network's zone, or "" when no network is
+	// selected. Carried on the scope so the messages below name the same zone
+	// the intersection was computed against.
+	zone string
 }
 
 // locationScope resolves which Hetzner locations this NodeClass may place nodes
@@ -232,7 +236,11 @@ func locationScope(snapshot *catalog.Snapshot, nodeClass *v1alpha1.HCloudNodeCla
 		networkZone = nodeClass.Status.Network.Zone
 	}
 
-	out := scope{explicit: len(nodeClass.Spec.Locations) > 0, catalogEmpty: len(zones) == 0}
+	out := scope{
+		explicit:     len(nodeClass.Spec.Locations) > 0,
+		catalogEmpty: len(zones) == 0,
+		zone:         networkZone,
+	}
 	names := nodeClass.Spec.Locations
 	if len(names) == 0 {
 		names = make([]string, 0, len(zones))
@@ -276,20 +284,16 @@ func locationScope(snapshot *catalog.Snapshot, nodeClass *v1alpha1.HCloudNodeCla
 // emptyFailure explains an empty location set. The reason distinguishes the
 // three causes because the fixes are different: widen the network, fix a typo,
 // or look at why the catalog is empty.
-func (s scope) emptyFailure(nodeClass *v1alpha1.HCloudNodeClass) (string, string) {
-	zone := ""
-	if nodeClass.Status.Network != nil {
-		zone = nodeClass.Status.Network.Zone
-	}
+func (s scope) emptyFailure() (string, string) {
 	switch {
 	case len(s.outsideZone) > 0 && len(s.unknown) > 0:
 		return "NoUsableLocations", fmt.Sprintf(
 			"no location is usable: %s are outside the private network's zone %q, and %s are not offered by any supported server type",
-			strings.Join(s.outsideZone, ", "), zone, strings.Join(s.unknown, ", "))
+			strings.Join(s.outsideZone, ", "), s.zone, strings.Join(s.unknown, ", "))
 	case len(s.outsideZone) > 0:
 		return "LocationsOutsideNetworkZone", fmt.Sprintf(
 			"every location in scope (%s) is outside the private network's zone %q, and a server cannot attach to a network in another zone",
-			strings.Join(s.outsideZone, ", "), zone)
+			strings.Join(s.outsideZone, ", "), s.zone)
 	case len(s.unknown) > 0:
 		return "UnknownLocations", fmt.Sprintf(
 			"no supported server type is offered in any location in scope (%s)",
@@ -301,17 +305,13 @@ func (s scope) emptyFailure(nodeClass *v1alpha1.HCloudNodeClass) (string, string
 
 // excludedMessage describes a partially narrowed location set, or "" when
 // nothing was dropped.
-func (s scope) excludedMessage(nodeClass *v1alpha1.HCloudNodeClass) string {
+func (s scope) excludedMessage() string {
 	if !s.explicit || (len(s.outsideZone) == 0 && len(s.unknown) == 0) {
 		return ""
 	}
-	zone := ""
-	if nodeClass.Status.Network != nil {
-		zone = nodeClass.Status.Network.Zone
-	}
 	var parts []string
 	if len(s.outsideZone) > 0 {
-		parts = append(parts, fmt.Sprintf("%s outside the private network's zone %q", strings.Join(s.outsideZone, ", "), zone))
+		parts = append(parts, fmt.Sprintf("%s outside the private network's zone %q", strings.Join(s.outsideZone, ", "), s.zone))
 	}
 	if len(s.unknown) > 0 {
 		parts = append(parts, fmt.Sprintf("%s not offered by any supported server type", strings.Join(s.unknown, ", ")))

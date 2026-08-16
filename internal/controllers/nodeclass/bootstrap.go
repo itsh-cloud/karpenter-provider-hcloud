@@ -42,6 +42,16 @@ func (b *BootstrapDiscovery) Reconcile(ctx context.Context, nodeClass *v1alpha1.
 	spec := nodeClass.Spec.Bootstrap
 	conds := nodeClass.StatusConditions(status.WithClock(b.clk))
 
+	// Every configuration failure below clears both join parameters, not just
+	// the one it noticed: they are consumed as a pair, and half a pair is a
+	// server that boots and never joins.
+	misconfigured := func(reason, message string) (reconcile.Result, error) {
+		nodeClass.Status.APIServerEndpoint = ""
+		nodeClass.Status.CACertHashes = nil
+		conds.SetFalse(v1alpha1.ConditionTypeBootstrapDiscoveryReady, reason, message)
+		return reconcile.Result{RequeueAfter: misconfiguredRequeue}, nil
+	}
+
 	// cluster-info is only read when it is actually needed. A NodeClass that
 	// overrides both values joins over an endpoint the cluster does not
 	// advertise, and making it depend on a ConfigMap it never consults would
@@ -66,20 +76,14 @@ func (b *BootstrapDiscovery) Reconcile(ctx context.Context, nodeClass *v1alpha1.
 			// Role was not installed, or the embedded kubeconfig is malformed.
 			// None of those are fixed by backoff, and all of them have to be
 			// readable off the NodeClass rather than only in the logs.
-			nodeClass.Status.APIServerEndpoint = ""
-			nodeClass.Status.CACertHashes = nil
-			conds.SetFalse(v1alpha1.ConditionTypeBootstrapDiscoveryReady, "ClusterInfoUnavailable",
+			return misconfigured("ClusterInfoUnavailable",
 				fmt.Sprintf("reading the join parameters from %s/%s: %s", bootstrap.ClusterInfoNamespace, bootstrap.ClusterInfoName, err))
-			return reconcile.Result{RequeueAfter: misconfiguredRequeue}, nil
 		}
 	}
 
 	endpoint, hashes, err := b.discovery.Resolve(spec.APIServerEndpoint, spec.CACertHashes)
 	if err != nil {
-		nodeClass.Status.APIServerEndpoint = ""
-		nodeClass.Status.CACertHashes = nil
-		conds.SetFalse(v1alpha1.ConditionTypeBootstrapDiscoveryReady, "JoinParametersIncomplete", err.Error())
-		return reconcile.Result{RequeueAfter: misconfiguredRequeue}, nil
+		return misconfigured("JoinParametersIncomplete", err.Error())
 	}
 
 	// The pins are re-validated even when they came from cluster-info, because
@@ -88,11 +92,8 @@ func (b *BootstrapDiscovery) Reconcile(ctx context.Context, nodeClass *v1alpha1.
 	// discovered ones. kubeadm rejects a malformed pin at join time with an
 	// error that reaches nobody.
 	if bad := invalidHashes(hashes); len(bad) > 0 {
-		nodeClass.Status.APIServerEndpoint = ""
-		nodeClass.Status.CACertHashes = nil
-		conds.SetFalse(v1alpha1.ConditionTypeBootstrapDiscoveryReady, "InvalidCACertHash",
+		return misconfigured("InvalidCACertHash",
 			fmt.Sprintf("CA pins are not in sha256:<64 hex> form: %s", strings.Join(bad, ", ")))
-		return reconcile.Result{RequeueAfter: misconfiguredRequeue}, nil
 	}
 
 	nodeClass.Status.APIServerEndpoint = endpoint

@@ -3,6 +3,7 @@ package hcloudapi
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
 )
@@ -81,32 +82,56 @@ type resourceClient struct{ c *hcloud.Client }
 // NewResources returns a Resources backed by the given hcloud client.
 func NewResources(c *hcloud.Client) Resources { return &resourceClient{c: c} }
 
-func (r *resourceClient) Image(ctx context.Context, name string, id *int64, arch string) (*Image, error) {
+// lookup resolves one name-or-id selector through a resource's pair of hcloud
+// getters.
+//
+// Written once and shared because hcloud-go reports a miss as (nil, nil, nil),
+// which every caller has to translate into a NotFoundError: the sub-reconcilers
+// key the whole transient-versus-configuration split off that type, so a kind
+// that forgot the translation would retry a missing resource forever instead of
+// reporting it on the NodeClass.
+func lookup[T any](
+	ctx context.Context,
+	kind, name string,
+	id *int64,
+	byID func(context.Context, int64) (*T, *hcloud.Response, error),
+	byName func(context.Context, string) (*T, *hcloud.Response, error),
+) (*T, error) {
 	var (
-		img *hcloud.Image
-		err error
-		sel string
+		found *T
+		err   error
+		sel   string
 	)
-	switch {
-	case id != nil:
-		sel = fmt.Sprint(*id)
-		img, _, err = r.c.Image.GetByID(ctx, *id)
-	default:
+	if id != nil {
+		sel = strconv.FormatInt(*id, 10)
+		found, _, err = byID(ctx, *id)
+	} else {
 		sel = name
-		a := hcloud.ArchitectureX86
-		if arch == "arm" {
-			a = hcloud.ArchitectureARM
-		}
-		// Name lookups must be architecture-qualified: the same image name
-		// exists per architecture with different IDs, and picking the wrong one
-		// produces a server that cannot boot.
-		img, _, err = r.c.Image.GetByNameAndArchitecture(ctx, name, a)
+		found, _, err = byName(ctx, name)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("resolving image %q: %w", sel, err)
+		return nil, fmt.Errorf("resolving %s %q: %w", kind, sel, err)
 	}
-	if img == nil {
-		return nil, &NotFoundError{Kind: "image", Selector: sel}
+	if found == nil {
+		return nil, &NotFoundError{Kind: kind, Selector: sel}
+	}
+	return found, nil
+}
+
+func (r *resourceClient) Image(ctx context.Context, name string, id *int64, arch string) (*Image, error) {
+	hcloudArch := hcloud.ArchitectureX86
+	if arch == "arm" {
+		hcloudArch = hcloud.ArchitectureARM
+	}
+	// Name lookups must be architecture-qualified: the same image name exists
+	// per architecture with different IDs, and picking the wrong one produces a
+	// server that cannot boot.
+	byName := func(ctx context.Context, name string) (*hcloud.Image, *hcloud.Response, error) {
+		return r.c.Image.GetByNameAndArchitecture(ctx, name, hcloudArch)
+	}
+	img, err := lookup(ctx, "image", name, id, r.c.Image.GetByID, byName)
+	if err != nil {
+		return nil, err
 	}
 	return &Image{
 		ID:           img.ID,
@@ -118,23 +143,9 @@ func (r *resourceClient) Image(ctx context.Context, name string, id *int64, arch
 }
 
 func (r *resourceClient) Network(ctx context.Context, name string, id *int64) (*Network, error) {
-	var (
-		n   *hcloud.Network
-		err error
-		sel string
-	)
-	if id != nil {
-		sel = fmt.Sprint(*id)
-		n, _, err = r.c.Network.GetByID(ctx, *id)
-	} else {
-		sel = name
-		n, _, err = r.c.Network.GetByName(ctx, name)
-	}
+	n, err := lookup(ctx, "network", name, id, r.c.Network.GetByID, r.c.Network.GetByName)
 	if err != nil {
-		return nil, fmt.Errorf("resolving network %q: %w", sel, err)
-	}
-	if n == nil {
-		return nil, &NotFoundError{Kind: "network", Selector: sel}
+		return nil, err
 	}
 	out := &Network{ID: n.ID, Name: n.Name}
 	if n.IPRange != nil {
@@ -152,67 +163,25 @@ func (r *resourceClient) Network(ctx context.Context, name string, id *int64) (*
 }
 
 func (r *resourceClient) Firewall(ctx context.Context, name string, id *int64) (*Firewall, error) {
-	var (
-		f   *hcloud.Firewall
-		err error
-		sel string
-	)
-	if id != nil {
-		sel = fmt.Sprint(*id)
-		f, _, err = r.c.Firewall.GetByID(ctx, *id)
-	} else {
-		sel = name
-		f, _, err = r.c.Firewall.GetByName(ctx, name)
-	}
+	f, err := lookup(ctx, "firewall", name, id, r.c.Firewall.GetByID, r.c.Firewall.GetByName)
 	if err != nil {
-		return nil, fmt.Errorf("resolving firewall %q: %w", sel, err)
-	}
-	if f == nil {
-		return nil, &NotFoundError{Kind: "firewall", Selector: sel}
+		return nil, err
 	}
 	return &Firewall{ID: f.ID, Name: f.Name}, nil
 }
 
 func (r *resourceClient) SSHKey(ctx context.Context, name string, id *int64) (*SSHKey, error) {
-	var (
-		k   *hcloud.SSHKey
-		err error
-		sel string
-	)
-	if id != nil {
-		sel = fmt.Sprint(*id)
-		k, _, err = r.c.SSHKey.GetByID(ctx, *id)
-	} else {
-		sel = name
-		k, _, err = r.c.SSHKey.GetByName(ctx, name)
-	}
+	k, err := lookup(ctx, "ssh key", name, id, r.c.SSHKey.GetByID, r.c.SSHKey.GetByName)
 	if err != nil {
-		return nil, fmt.Errorf("resolving ssh key %q: %w", sel, err)
-	}
-	if k == nil {
-		return nil, &NotFoundError{Kind: "ssh key", Selector: sel}
+		return nil, err
 	}
 	return &SSHKey{ID: k.ID, Name: k.Name, Fingerprint: k.Fingerprint}, nil
 }
 
 func (r *resourceClient) PlacementGroup(ctx context.Context, name string, id *int64) (*PlacementGroup, error) {
-	var (
-		g   *hcloud.PlacementGroup
-		err error
-		sel string
-	)
-	if id != nil {
-		sel = fmt.Sprint(*id)
-		g, _, err = r.c.PlacementGroup.GetByID(ctx, *id)
-	} else {
-		sel = name
-		g, _, err = r.c.PlacementGroup.GetByName(ctx, name)
-	}
+	g, err := lookup(ctx, "placement group", name, id, r.c.PlacementGroup.GetByID, r.c.PlacementGroup.GetByName)
 	if err != nil {
-		return nil, fmt.Errorf("resolving placement group %q: %w", sel, err)
-	}
-	if g == nil {
-		return nil, &NotFoundError{Kind: "placement group", Selector: sel}
+		return nil, err
 	}
 	return &PlacementGroup{
 		ID:          g.ID,
