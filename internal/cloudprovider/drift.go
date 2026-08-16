@@ -62,6 +62,17 @@ func (c *CloudProvider) IsDrifted(ctx context.Context, nodeClaim *karpv1.NodeCla
 	if !nodeClass.DeletionTimestamp.IsZero() {
 		return "", nil
 	}
+	// Every comparison below reads nodeClass.Status, and the resolvers NIL
+	// those fields when they cannot resolve: a renamed firewall empties
+	// Status.Firewalls, a lost network empties Status.Network. Comparing
+	// against that reads as "everything changed" and drifts the whole fleet on
+	// one bad selector. Ready is the controller's own statement that its status
+	// is worth reading, so drift declines without it, exactly as Create does.
+	if !nodeClass.StatusConditions().Root().IsTrue() {
+		log.FromContext(ctx).V(1).Info("skipping drift evaluation: the nodeclass is not ready, so its status is not comparable",
+			"nodeclass", nodeClass.Name)
+		return "", nil
+	}
 
 	if reason := nodeClassHashDrift(ctx, nodeClass, nodeClaim); reason != "" {
 		return reason, nil
@@ -125,10 +136,16 @@ func nodeClassHashDrift(ctx context.Context, nodeClass *v1alpha1.HCloudNodeClass
 // not return cannot be compared and is covered by the spec hash instead, which
 // is the division of labour the whole drift design rests on.
 func serverDrift(nodeClass *v1alpha1.HCloudNodeClass, srv *hcloudapi.Server) cloudprovider.DriftReason {
-	// Location. The NodeClass's location set can be narrowed by an operator, or
-	// by its own zone bound; a server outside the current set can no longer be
-	// replaced in place and has to move.
-	if locs := nodeClass.Status.Locations; len(locs) > 0 && srv.Location != "" {
+	// Location, and ONLY when the operator wrote the list down.
+	//
+	// With spec.locations unset, Status.Locations is derived entirely from the
+	// Hetzner catalog, so a partial catalog response or a type going deprecated
+	// in one location silently narrows it, with ValidationSucceeded staying
+	// True because the narrowing warning is gated on the list being explicit.
+	// Treating that as drift would replace every node in a location on the
+	// strength of one odd API response. An operator removing a location from
+	// the spec is intent; the catalog moving underneath us is not.
+	if locs := nodeClass.Status.Locations; len(nodeClass.Spec.Locations) > 0 && len(locs) > 0 && srv.Location != "" {
 		if !slices.ContainsFunc(locs, func(l v1alpha1.LocationStatus) bool { return l.Name == srv.Location }) {
 			return LocationDrift
 		}

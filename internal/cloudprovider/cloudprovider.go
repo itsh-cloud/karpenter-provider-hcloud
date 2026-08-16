@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/awslabs/operatorpkg/status"
+	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -145,7 +146,7 @@ func (c *CloudProvider) Create(ctx context.Context, nodeClaim *karpv1.NodeClaim)
 	if err != nil {
 		return nil, err
 	}
-	return c.toNodeClaim(srv, instanceType, nodeClaim), nil
+	return c.toNodeClaim(srv, instanceType, nodeClaim, nodeClass), nil
 }
 
 // Delete removes the server behind a NodeClaim.
@@ -271,8 +272,26 @@ func (c *CloudProvider) nodeClassForNodePool(ctx context.Context, nodePool *karp
 // The labels here are what karpenter binds pods against before the node itself
 // exists, so a missing one is a pod that will not schedule onto a node that
 // could have held it.
-func (c *CloudProvider) toNodeClaim(srv *hcloudapi.Server, it *cloudprovider.InstanceType, in *karpv1.NodeClaim) *karpv1.NodeClaim {
+func (c *CloudProvider) toNodeClaim(srv *hcloudapi.Server, it *cloudprovider.InstanceType, in *karpv1.NodeClaim, nodeClass *v1alpha1.HCloudNodeClass) *karpv1.NodeClaim {
 	out := in.DeepCopy()
+
+	// The spec hash, stamped HERE and nowhere else on the launch path.
+	//
+	// Without it NodeClassDrift is dead code: the hash controller only writes
+	// this annotation onto NodeClaims during a version back-fill, which runs
+	// once and then never again, so no NodeClaim launched afterwards carries
+	// one and drift declines to judge forever. Everything the hash exists to
+	// cover, user data, ssh keys, kubelet config, bootstrap, would silently
+	// never drift a node.
+	//
+	// Core picks these up in PopulateNodeClaimDetails, which merges the
+	// annotations of the NodeClaim returned from Create onto the stored object.
+	if nodeClass != nil {
+		out.Annotations = lo.Assign(out.Annotations, map[string]string{
+			v1alpha1.AnnotationHash:        nodeClass.Hash(),
+			v1alpha1.AnnotationHashVersion: v1alpha1.HashVersion,
+		})
+	}
 	if out.Labels == nil {
 		out.Labels = map[string]string{}
 	}

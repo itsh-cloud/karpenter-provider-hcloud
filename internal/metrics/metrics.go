@@ -1,10 +1,17 @@
 // Package metrics holds this provider's own Prometheus series.
 //
 // Karpenter core already exports the scheduling and disruption side. What core
-// cannot see is the Hetzner side: whether the API is answering, how much of the
-// shared rate limit is left, and which (server type, location) pairs are
-// refusing to place. Those are the three questions asked during an incident,
-// and none of them has a core equivalent.
+// cannot see is the Hetzner side: which (server type, location) pairs are
+// refusing to place, how long a launch took including its fall-through, and
+// whether the catalog is still being refreshed.
+//
+// Every series here has a writer. Request counts, in-flight depth and the
+// remaining rate limit would all be worth having and are deliberately NOT
+// declared yet: hcloud-go surfaces the limit on every Response and wiring it
+// needs a client wrapper. A gauge nothing writes scrapes as a permanent zero,
+// and for a rate limit zero is the reading for FULLY THROTTLED, so declaring it
+// early would put the worst possible value on the dashboard from process start
+// and page somebody for it.
 package metrics
 
 import (
@@ -20,42 +27,6 @@ const (
 )
 
 var (
-	// APIRequests counts every call to the Hetzner API.
-	//
-	// Labelled by operation and status rather than by NodeClaim, because the
-	// question this answers is "is Hetzner healthy and are we being throttled",
-	// which is a property of the API and not of any one node.
-	APIRequests = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: namespace,
-		Subsystem: subsystem,
-		Name:      "api_requests_total",
-		Help:      "Hetzner Cloud API requests, by operation and outcome class.",
-	}, []string{"operation", "status"})
-
-	// APIRequestsInflight is the number of Hetzner calls in progress.
-	//
-	// A gauge rather than a histogram: it exists to catch the pile-up that
-	// precedes rate limiting, where the useful signal is the depth right now.
-	APIRequestsInflight = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace: namespace,
-		Subsystem: subsystem,
-		Name:      "api_requests_inflight",
-		Help:      "Hetzner Cloud API requests currently in flight.",
-	})
-
-	// RateLimitRemaining is what Hetzner says is left of the hourly budget.
-	//
-	// The budget is 3600/hour PER PROJECT and is shared with hcloud-CCM and the
-	// CSI driver, so this falling is not necessarily this controller's doing.
-	// That is exactly why it is worth graphing: it is the only place the three
-	// consumers become visible as one number.
-	RateLimitRemaining = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace: namespace,
-		Subsystem: subsystem,
-		Name:      "ratelimit_remaining",
-		Help:      "Requests remaining in the Hetzner Cloud hourly rate limit, shared with the CCM and CSI driver.",
-	})
-
 	// LaunchFailures counts creates that did not produce a server.
 	//
 	// The reason label carries this provider's error CLASS, not the raw Hetzner
@@ -164,9 +135,6 @@ func init() {
 	// operator's /metrics endpoint serves. A separate registry would be
 	// collected by nothing.
 	crmetrics.Registry.MustRegister(
-		APIRequests,
-		APIRequestsInflight,
-		RateLimitRemaining,
 		LaunchFailures,
 		LaunchDuration,
 		OfferingUnavailable,

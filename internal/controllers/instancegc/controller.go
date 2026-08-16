@@ -152,13 +152,18 @@ func (c *Controller) Reconcile(ctx context.Context) (reconciler.Result, error) {
 		log.FromContext(ctx).Info("deleting an orphaned server: it carries this cluster's label but its NodeClaim is gone",
 			"server", srv.Name, "id", srv.ID, "nodeclaim", claim, "age", c.clock.Since(srv.Created).Truncate(time.Second).String())
 
-		metrics.OrphansReaped.Inc()
 		if err := c.provider.Delete(ctx, srv.ProviderID()); err != nil {
 			if hcloudapi.IsNotFound(err) {
+				// Somebody else removed it. Not a reap by us, so not counted.
 				continue
 			}
 			errs = append(errs, fmt.Errorf("deleting orphaned server %s, %w", srv.Name, err))
+			continue
 		}
+		// Counted only after the delete succeeded. Incrementing before it would
+		// re-count on every requeue of a delete that keeps failing, turning a
+		// stuck orphan into a rising rate that looks like many leaks.
+		metrics.OrphansReaped.Inc()
 	}
 	if len(errs) > 0 {
 		return reconciler.Result{}, fmt.Errorf("garbage collecting orphaned servers: %w", multierr.Combine(errs...))

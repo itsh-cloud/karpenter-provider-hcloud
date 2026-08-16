@@ -66,11 +66,19 @@ It asserts the decision cluster-autoscaler's static list got wrong: a cx33 in
 hel1 should be preferred over a cpx32 in nbg1, because price ranks it first and
 region is not a tiebreak.
 
-Running it requires temporarily adding `hel1` to the shared NodeClass's
-`spec.locations`. That is safe and the safety is not incidental:
-`spec.locations` is in the not-hashed set, so adding it does not change the
-NodeClass hash and therefore cannot drift the production fleet. Removing it at
-teardown drifts only the hel1 node, which is the teardown behaviour you want.
+Running it requires temporarily setting the shared NodeClass's
+`spec.locations` to **`[nbg1, hel1]`**, keeping every production location in the
+list. Write the full list; do not "add hel1" to something you have not read.
+
+The protection is that nbg1 stays IN the list, and nothing else. An earlier
+version of this note claimed the safety came from `spec.locations` being in the
+not-hashed set, which is a non-sequitur: it carries `hash:"ignore"` precisely
+BECAUSE drift compares it live instead. If `spec.locations` is currently unset,
+writing `[hel1]` alone narrows the resolved set to hel1 and drifts every nbg1
+node, with the NodeClass reporting Ready throughout.
+
+Removing hel1 at teardown drifts only the hel1 node, which is the teardown
+behaviour you want.
 
 Do **not** reach for a second NodeClass to avoid the edit. There is exactly one,
 deliberately, and a second would quietly undo that.

@@ -183,6 +183,8 @@ func (p *Provider) Create(
 					log.FromContext(ctx).Info("adopted a server from a lost create response",
 						"server", adopted.Name, "id", adopted.ID, "serverType", adopted.ServerType)
 					p.cache.invalidate()
+					metrics.LaunchDuration.WithLabelValues(adopted.ServerType, adopted.Location, "adopted").
+						Observe(time.Since(started).Seconds())
 					return adopted, adoptedType, nil
 				}
 			}
@@ -217,7 +219,11 @@ func (p *Provider) Create(
 	// out-of-stock candidates is the slowest thing this provider does and the
 	// case the bucket layout was chosen for; observing only on success makes
 	// the result label a constant and hides exactly that.
-	metrics.LaunchDuration.WithLabelValues(candidates[0].InstanceType.Name, candidates[0].Location, "exhausted").
+	// Labelled with the LAST candidate tried, matching every other call site
+	// here, so the series says where the search gave up rather than where it
+	// started.
+	last := candidates[attempts-1]
+	metrics.LaunchDuration.WithLabelValues(last.InstanceType.Name, last.Location, "exhausted").
 		Observe(time.Since(started).Seconds())
 	return nil, nil, cloudprovider.NewInsufficientCapacityError(
 		fmt.Errorf("no capacity after %d attempts across %d candidates, last error: %w", attempts, len(candidates), lastErr))

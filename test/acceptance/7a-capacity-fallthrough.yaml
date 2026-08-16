@@ -32,8 +32,10 @@ metadata:
   labels:
     itsh.dev/acceptance: "7a"
 spec:
-  # One node's worth. cx33 is 4 cpu, cpx32 is 4 cpu, so this admits exactly one
-  # of either and cannot run away if something misbehaves.
+  # Core's limit check is strictly-greater (usage.Cmp(limit) > 0), and it sums
+  # NodeClaim CAPACITY, so at exactly 4 the limit is not yet exceeded and a
+  # second 4 cpu node is still admitted. This caps the test at TWO nodes, not
+  # one. The real single-node bound is the one-replica Deployment below.
   limits:
     cpu: "4"
   disruption:

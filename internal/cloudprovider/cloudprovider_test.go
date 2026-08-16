@@ -2,6 +2,7 @@ package cloudprovider
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -36,9 +37,12 @@ func (f *fakeBootstrapper) Render(context.Context, *v1alpha1.HCloudNodeClass, *k
 }
 
 // fakeServers is the minimum needed to reach the CloudProvider's own logic.
+var errTransient = errors.New("dial tcp: i/o timeout")
+
 type fakeServers struct {
 	byID    map[int64]*hcloudapi.Server
 	created []hcloudapi.CreateServerRequest
+	getErr  error
 }
 
 func (f *fakeServers) Create(_ context.Context, req hcloudapi.CreateServerRequest) (*hcloudapi.Server, error) {
@@ -58,6 +62,9 @@ func (f *fakeServers) Delete(_ context.Context, id int64) error {
 	return nil
 }
 func (f *fakeServers) Get(_ context.Context, id int64) (*hcloudapi.Server, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
 	return f.byID[id], nil
 }
 func (f *fakeServers) GetByName(context.Context, string) (*hcloudapi.Server, error) { return nil, nil }
@@ -337,5 +344,34 @@ func TestListReportsCorrectedMemoryNotAdvertised(t *testing.T) {
 	}
 	if mem < advertised*90/100 {
 		t.Errorf("memory = %d, more than 10%% below advertised %d; the correction is too aggressive", mem, advertised)
+	}
+}
+
+// TestHashIsStampedOnLaunch.
+//
+// Without this the whole hash half of drift is dead code in production while
+// its unit tests stay green: the hash controller only writes this annotation
+// during a version back-fill, which runs once and never again, so no NodeClaim
+// launched afterwards carries one and drift declines forever. Everything the
+// hash covers, user data, ssh keys, kubelet config, would silently never drift.
+func TestHashIsStampedOnLaunch(t *testing.T) {
+	nc := readyNodeClass()
+	cp, _ := newTestProvider(t, nc)
+
+	claim := &karpv1.NodeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "n1"},
+		Spec: karpv1.NodeClaimSpec{
+			NodeClassRef: &karpv1.NodeClassReference{Group: v1alpha1.Group, Kind: "HCloudNodeClass", Name: "default"},
+		},
+	}
+	out, err := cp.Create(context.Background(), claim)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if got := out.Annotations[v1alpha1.AnnotationHashVersion]; got != v1alpha1.HashVersion {
+		t.Errorf("hash version annotation = %q, want %q", got, v1alpha1.HashVersion)
+	}
+	if got := out.Annotations[v1alpha1.AnnotationHash]; got != nc.Hash() {
+		t.Errorf("hash annotation = %q, want the NodeClass's %q", got, nc.Hash())
 	}
 }

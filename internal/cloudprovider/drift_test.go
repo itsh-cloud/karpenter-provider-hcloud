@@ -20,6 +20,9 @@ func resolvedNodeClass() *v1alpha1.HCloudNodeClass {
 	nc.Status.Network = &v1alpha1.NetworkStatus{ID: 7, Name: "k8s-network", Zone: "eu-central"}
 	nc.Status.Firewalls = []v1alpha1.FirewallStatus{{ID: 1, Name: "k8s-fw"}}
 	nc.Status.Locations = []v1alpha1.LocationStatus{{Name: "nbg1", NetworkZone: "eu-central"}}
+	// Written down by the operator. Location drift only applies to an explicit
+	// list; see TestCatalogNarrowingIsNotLocationDrift for why.
+	nc.Spec.Locations = []string{"nbg1"}
 	return nc
 }
 
@@ -49,6 +52,7 @@ func TestServerDriftDetectsRealChanges(t *testing.T) {
 		expected cloudprovider.DriftReason
 	}{
 		{"locationRemovedFromClass", func(nc *v1alpha1.HCloudNodeClass, _ *hcloudapi.Server) {
+			nc.Spec.Locations = []string{"fsn1"}
 			nc.Status.Locations = []v1alpha1.LocationStatus{{Name: "fsn1", NetworkZone: "eu-central"}}
 		}, LocationDrift},
 		{"networkChanged", func(nc *v1alpha1.HCloudNodeClass, _ *hcloudapi.Server) {
@@ -268,3 +272,156 @@ func TestIsDriftedIgnoresATerminatingNodeClass(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// TestCatalogNarrowingIsNotLocationDrift.
+//
+// With spec.locations unset, status.locations is derived ENTIRELY from the
+// Hetzner catalog. A partial catalog response, or a server type going
+// deprecated in one location, silently narrows it, and the narrowing warning is
+// gated on the list being explicit so ValidationSucceeded stays True with no
+// event and no message.
+//
+// Treating that as drift would replace every node in a location on the strength
+// of one odd API response, with the NodeClass reporting Ready the whole time.
+// An operator removing a location is intent; the catalog moving underneath us
+// is not.
+func TestCatalogNarrowingIsNotLocationDrift(t *testing.T) {
+	nc := resolvedNodeClass()
+	nc.Spec.Locations = nil // the operator never wrote a list
+	// The catalog no longer reports nbg1, where this server lives.
+	nc.Status.Locations = []v1alpha1.LocationStatus{{Name: "fsn1", NetworkZone: "eu-central"}}
+
+	if got := serverDrift(nc, matchingServer()); got != "" {
+		t.Errorf("serverDrift = %q from a catalog-narrowed location set; that would replace every node in a location "+
+			"because one API response came back short", got)
+	}
+}
+
+// TestExplicitLocationRemovalStillDrifts is the other half, so the fix above
+// cannot be satisfied by disabling location drift entirely.
+func TestExplicitLocationRemovalStillDrifts(t *testing.T) {
+	nc := resolvedNodeClass()
+	nc.Spec.Locations = []string{"fsn1"}
+	nc.Status.Locations = []v1alpha1.LocationStatus{{Name: "fsn1", NetworkZone: "eu-central"}}
+
+	if got := serverDrift(nc, matchingServer()); got != LocationDrift {
+		t.Errorf("serverDrift = %q, want LocationDrift: the operator removed nbg1 from spec.locations", got)
+	}
+}
+
+// TestDriftDeclinesOnAnUnreadyNodeClass.
+//
+// Every comparison reads nodeClass.Status, and the resolvers NIL those fields
+// when they cannot resolve: a renamed firewall empties Status.Firewalls. Judging
+// against that reads as "everything changed" and marks the whole fleet drifted
+// on one bad selector.
+func TestDriftDeclinesOnAnUnreadyNodeClass(t *testing.T) {
+	nc := resolvedNodeClass()
+	// What a renamed firewall does to the status.
+	nc.Status.Firewalls = nil
+	nc.StatusConditions().SetFalse(v1alpha1.ConditionTypeFirewallsReady, "FirewallNotFound", "no such firewall")
+
+	cp, servers := newTestProvider(t, nc)
+	srv := matchingServer()
+	srv.Labels = map[string]string{hcloudapi.LabelManagedBy: testCluster}
+	servers.byID[1] = srv
+
+	claim := &karpv1.NodeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "n1"},
+		Spec:       karpv1.NodeClaimSpec{NodeClassRef: &karpv1.NodeClassReference{Group: v1alpha1.Group, Kind: "HCloudNodeClass", Name: "default"}},
+		Status:     karpv1.NodeClaimStatus{ProviderID: "hcloud://1"},
+	}
+	got, err := cp.IsDrifted(context.Background(), claim)
+	if err != nil || got != "" {
+		t.Errorf("IsDrifted = %q, %v against a NodeClass whose own controller says its status is not trustworthy", got, err)
+	}
+}
+
+// TestTransientReadFailureIsAnErrorNotDrift: a Hetzner blip must never be
+// reported as a reason to replace a node.
+func TestTransientReadFailureIsAnErrorNotDrift(t *testing.T) {
+	nc := readyNodeClass()
+	nc.Spec.Locations = []string{"nbg1"}
+	cp, servers := newTestProvider(t, nc)
+	servers.getErr = errTransient
+
+	claim := &karpv1.NodeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "n1"},
+		Spec:       karpv1.NodeClaimSpec{NodeClassRef: &karpv1.NodeClassReference{Group: v1alpha1.Group, Kind: "HCloudNodeClass", Name: "default"}},
+		Status:     karpv1.NodeClaimStatus{ProviderID: "hcloud://1"},
+	}
+	got, err := cp.IsDrifted(context.Background(), claim)
+	if err == nil {
+		t.Fatalf("IsDrifted = %q, nil on a failed read; a blip must be retried, not acted on", got)
+	}
+	if got != "" {
+		t.Errorf("IsDrifted returned reason %q alongside an error", got)
+	}
+}
+
+// TestHashDriftIsReachableFromIsDrifted.
+//
+// A unit test of nodeClassHashDrift passes even when nothing calls it, which is
+// exactly how this stayed dead: the annotation was never stamped on a NodeClaim,
+// so the whole hash half of drift was unreachable in production while its unit
+// tests stayed green.
+func TestHashDriftIsReachableFromIsDrifted(t *testing.T) {
+	nc := readyNodeClass()
+	nc.Spec.Locations = []string{"nbg1"}
+	nc.Annotations = map[string]string{
+		v1alpha1.AnnotationHashVersion: v1alpha1.HashVersion,
+		v1alpha1.AnnotationHash:        "class-hash",
+	}
+	cp, servers := newTestProvider(t, nc)
+	srv := matchingServer()
+	srv.Labels = map[string]string{hcloudapi.LabelManagedBy: testCluster}
+	servers.byID[1] = srv
+
+	claim := &karpv1.NodeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "n1", Annotations: map[string]string{
+			v1alpha1.AnnotationHashVersion: v1alpha1.HashVersion,
+			v1alpha1.AnnotationHash:        "a-stale-hash",
+		}},
+		Spec:   karpv1.NodeClaimSpec{NodeClassRef: &karpv1.NodeClassReference{Group: v1alpha1.Group, Kind: "HCloudNodeClass", Name: "default"}},
+		Status: karpv1.NodeClaimStatus{ProviderID: "hcloud://1"},
+	}
+	got, err := cp.IsDrifted(context.Background(), claim)
+	if err != nil {
+		t.Fatalf("IsDrifted: %v", err)
+	}
+	if got != NodeClassDrift {
+		t.Errorf("IsDrifted = %q, want NodeClassDrift; the hash half of drift is not wired into IsDrifted", got)
+	}
+}
+
+// TestEmptyStatusLocationsIsNotDrift.
+//
+// Defence in depth behind the readiness gate. Every validation failure path
+// NILS status.locations, so if the gate is ever loosened this is the difference
+// between "cannot judge" and "every node in the fleet is in the wrong place".
+func TestEmptyStatusLocationsIsNotDrift(t *testing.T) {
+	nc := resolvedNodeClass()
+	nc.Spec.Locations = []string{"nbg1"} // the operator did write a list
+	nc.Status.Locations = nil            // but nothing resolved
+
+	if got := serverDrift(nc, matchingServer()); got != "" {
+		t.Errorf("serverDrift = %q with no resolved locations at all; an empty set means unknown, not wrong", got)
+	}
+}
+
+// TestClassWithoutAHashIsNotDrift: the hash controller has not reached the
+// NodeClass yet. Absence is not evidence, in either direction.
+func TestClassWithoutAHashIsNotDrift(t *testing.T) {
+	nc := resolvedNodeClass()
+	nc.Annotations = map[string]string{v1alpha1.AnnotationHashVersion: v1alpha1.HashVersion}
+	claim := &karpv1.NodeClaim{ObjectMeta: metav1.ObjectMeta{
+		Name: "n1",
+		Annotations: map[string]string{
+			v1alpha1.AnnotationHashVersion: v1alpha1.HashVersion,
+			v1alpha1.AnnotationHash:        "some-hash",
+		},
+	}}
+	if got := nodeClassHashDrift(context.Background(), nc, claim); got != "" {
+		t.Errorf("nodeClassHashDrift = %q with no hash on the NodeClass; that is a controller that has not caught up, not drift", got)
+	}
+}
