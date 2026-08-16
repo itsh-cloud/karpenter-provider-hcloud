@@ -62,6 +62,20 @@ spec:
           value: "7a"
           effect: NoSchedule
       requirements:
+        # Pinned to on-demand, and this is NOT optional on Hetzner.
+        #
+        # Left unconstrained, the requirement is unbounded, so core's
+        # Has(spot) AND Has(on-demand) test is true and consolidation pins
+        # every replacement to spot (consolidation.go, "OD -> [OD,Spot]"). Its
+        # comment says the launch will then fail and it will "leave the node
+        # alone"; it does not. It retries roughly every 27 seconds forever,
+        # creating and deleting a NodeClaim each time, because Hetzner has no
+        # spot capacity at all and never will.
+        #
+        # Observed live on 2026-08-16 before this line existed.
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: [on-demand]
         # Exactly the two types from the founding incident, and nothing else.
         # Price ranks them cx33 then cpx32, which is also the order the
         # expander's table wanted, so a correct provider takes cx33 whenever it

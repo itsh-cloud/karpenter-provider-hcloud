@@ -4,6 +4,24 @@ These run against a live cluster and a live Hetzner project. They are not `go
 test`: what they check is whether the provider does the right thing when
 Hetzner says no, which cannot be faked convincingly.
 
+## Every NodePool must pin capacity-type
+
+```yaml
+- key: karpenter.sh/capacity-type
+  operator: In
+  values: [on-demand]
+```
+
+Not a style preference. Hetzner has no spot capacity, but an unconstrained
+requirement is UNBOUNDED, so core's `Has(spot) && Has(on-demand)` test passes
+and consolidation pins every replacement to spot. Core expects that launch to
+fail harmlessly and to "leave the node alone"; in practice it retries about
+every 27 seconds indefinitely, creating and deleting a NodeClaim each time.
+
+Observed live on 2026-08-16. No Hetzner servers are created by the loop, because
+the provider refuses before ordering, but it churns the API continuously and
+the node is never actually consolidated.
+
 ## 7a, capacity fall-through
 
 Always runnable, no teardown required beyond deleting what it creates.
