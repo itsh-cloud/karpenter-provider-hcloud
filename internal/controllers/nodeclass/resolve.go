@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/awslabs/operatorpkg/status"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/hcloudapi"
@@ -24,12 +25,6 @@ const (
 	// leaving them staring at a stale condition for five minutes teaches them
 	// the controller is broken.
 	misconfiguredRequeue = time.Minute
-
-	// catalogRequeue is how often a NodeClass waiting on the server type
-	// catalog is re-checked. Short, because the wait is for one HTTP call this
-	// process is already making, and every restart and leader-election failover
-	// otherwise reads Ready=Unknown on every NodeClass for a full minute.
-	catalogRequeue = 5 * time.Second
 )
 
 // Reason suffixes appended to a per-resource prefix, e.g. "Image" + "NotFound".
@@ -83,6 +78,25 @@ func configFailure(ctx context.Context, err error) (string, bool) {
 		}
 		return "", false
 	}
+}
+
+// noteUnreachable records a transient failure on a condition that has NEVER
+// resolved, and does nothing otherwise.
+//
+// The guard is the whole point. An already-True condition must survive a
+// Hetzner outage untouched, because downgrading it to Unknown propagates to
+// NodeClassReady and stops the NodePool over a blip. But a condition still at
+// its initialisation value has nothing to protect, and leaving it reading
+// "object is awaiting reconciliation" indefinitely is the failure mode with no
+// diagnosis at all: egress blocked by a NetworkPolicy, DNS not resolving
+// api.hetzner.cloud, or a new Hetzner error code all classify transient and
+// retry forever, and Ready is already Unknown in that state either way.
+func noteUnreachable(conds status.ConditionSet, conditionType, kind string, err error) {
+	if !conds.Get(conditionType).IsUnknown() {
+		return
+	}
+	conds.SetUnknownWithReason(conditionType, kind+"Unreachable",
+		fmt.Sprintf("the Hetzner API could not be reached to resolve the %s, retrying: %s", kind, err))
 }
 
 // failureMessage renders the condition message for a resolve failure.

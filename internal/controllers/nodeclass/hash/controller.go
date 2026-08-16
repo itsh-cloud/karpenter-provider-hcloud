@@ -111,8 +111,11 @@ func (c *Controller) backfillNodeClaimHashes(ctx context.Context, nodeClass *v1a
 		// Read WithObservedOnly, because StatusConditions is a constructor
 		// rather than an accessor: without it, inspecting a NodeClaim
 		// fabricates Ready/Launched/Registered/Initialized as Unknown on the
-		// in-memory copy, which then lands in the diff guard below and turns a
-		// metadata patch into a spurious status rewrite.
+		// in-memory copy, which then defeats the diff guard below and sends a
+		// patch for a NodeClaim that needed none. The apiserver discards the
+		// status half (NodeClaim has a status subresource, and this is a patch
+		// to the main resource), so the cost is a wasted request per NodeClaim
+		// per back-fill rather than a corrupted status.
 		if nc.StatusConditions(status.WithObservedOnly()).Get(karpv1.ConditionTypeDrifted) == nil {
 			updates[v1alpha1.AnnotationHash] = hash
 		}

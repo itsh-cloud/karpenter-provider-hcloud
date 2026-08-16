@@ -41,12 +41,22 @@ func (f *Firewalls) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNod
 		if err != nil {
 			r, ok := configFailure(ctx, err)
 			if !ok {
+				noteUnreachable(nodeClass.StatusConditions(status.WithClock(f.clk)), v1alpha1.ConditionTypeFirewallsReady, "Firewalls", err)
 				return reconcile.Result{}, fmt.Errorf("resolving firewall, %w", err)
 			}
 			// Collected rather than returned on the first failure, so one pass
 			// names every broken selector. Spec order is the iteration order,
 			// so the message is byte-identical between identical reconciles.
-			reason, cause = r, err
+			//
+			// The most severe cause is kept, not the most recent: a rejected
+			// credential alongside a genuinely missing firewall would otherwise
+			// be reported as merely missing, depending on which was listed
+			// last, and the operator would go looking for a deleted firewall
+			// instead of a dead token. This path fails closed either way, so
+			// unlike the ssh key equivalent only the message is at stake.
+			if reason == "" || (r != reasonNotFound && reason == reasonNotFound) {
+				reason, cause = r, err
+			}
 			missing = append(missing, describeSelector(sel.Name, sel.ID))
 			continue
 		}

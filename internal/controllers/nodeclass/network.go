@@ -45,6 +45,7 @@ func (n *Network) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNodeC
 			)
 			return reconcile.Result{RequeueAfter: misconfiguredRequeue}, nil
 		}
+		noteUnreachable(nodeClass.StatusConditions(status.WithClock(n.clk)), v1alpha1.ConditionTypeNetworkReady, "Network", err)
 		return reconcile.Result{}, fmt.Errorf("resolving network, %w", err)
 	}
 

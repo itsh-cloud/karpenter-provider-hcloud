@@ -655,8 +655,219 @@ func TestMissingSSHKeyDoesNotStopProvisioning(t *testing.T) {
 			t.Fatalf("repeat reconcile: %v", err)
 		}
 	}
-	if got := slices.Compact(h.recorder.reasons()); len(got) != 1 {
-		t.Errorf("events = %v, want the warning published once", h.recorder.reasons())
+	// Counted, NOT slices.Compact: Compact collapses consecutive duplicates, so
+	// it reduces "published on every one of four passes" to one element and the
+	// assertion passes while the behaviour it names is broken.
+	if got := countReason(h.recorder.reasons(), "SSHKeysNarrowed"); got != 1 {
+		t.Errorf("SSHKeysNarrowed published %d times across four passes, want 1", got)
+	}
+}
+
+func countReason(reasons []string, want string) int {
+	n := 0
+	for _, r := range reasons {
+		if r == want {
+			n++
+		}
+	}
+	return n
+}
+
+// TestLocationsNarrowedEventPublishedOnce: karpenter's recorder dedupes for two
+// minutes and this reconciler requeues every five, so the dedupe window always
+// expires first. Publishing per pass bills a stable, deliberately narrowed class
+// roughly 288 Warning events a day.
+func TestLocationsNarrowedEventPublishedOnce(t *testing.T) {
+	ctx := context.Background()
+	nodeClass := newNodeClass()
+	// hil is in the catalog but in us-west, while the resolved network is in
+	// eu-central, so it is dropped and the rest still work.
+	nodeClass.Spec.Locations = []string{"nbg1", "fsn1", "hil"}
+	h := newHarness(t, nodeClass)
+
+	for i := range 4 {
+		nc, err := h.reconcile(ctx)
+		if err != nil {
+			t.Fatalf("reconcile %d: %v", i, err)
+		}
+		assertCondition(t, nc, v1alpha1.ConditionTypeValidationSucceeded, metav1.ConditionTrue, "LocationsNarrowed")
+	}
+	if got := countReason(h.recorder.reasons(), "LocationsNarrowed"); got != 1 {
+		t.Errorf("LocationsNarrowed published %d times across four passes, want 1", got)
+	}
+}
+
+// TestSpecEditDuringBlipDoesNotValidateStaleResolution.
+//
+// A spec edit that coincides with one transient resolver failure leaves that
+// dependent True at the PREVIOUS generation. Without the observedGeneration
+// check, validation reads the old resolution, concludes all is well, and stamps
+// ValidationSucceeded=True at the NEW generation, which reads as "this edit is
+// validated" when nothing has re-resolved it. It must also recover, not latch.
+func TestSpecEditDuringBlipDoesNotValidateStaleResolution(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, newNodeClass())
+
+	if _, err := h.reconcile(ctx); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+
+	var nc v1alpha1.HCloudNodeClass
+	if err := h.client.Get(ctx, h.name, &nc); err != nil {
+		t.Fatal(err)
+	}
+	nc.Generation = 2
+	if err := h.client.Update(ctx, &nc); err != nil {
+		t.Fatal(err)
+	}
+
+	h.resources.image = func() (*hcloudapi.Image, error) { return nil, transientErr }
+	if _, err := h.reconcile(ctx); err == nil {
+		t.Fatal("transient failure should be returned as an error")
+	}
+
+	out := &v1alpha1.HCloudNodeClass{}
+	if err := h.client.Get(ctx, h.name, out); err != nil {
+		t.Fatal(err)
+	}
+	assertCondition(t, out, v1alpha1.ConditionTypeValidationSucceeded, metav1.ConditionUnknown, reasonDependenciesNotReady)
+
+	// And it clears once the blip does: an observedGeneration that never
+	// catches up would pin this Unknown forever.
+	h.resources.image = nil
+	got, err := h.reconcile(ctx)
+	if err != nil {
+		t.Fatalf("recovery reconcile: %v", err)
+	}
+	assertCondition(t, got, v1alpha1.ConditionTypeValidationSucceeded, metav1.ConditionTrue, "")
+	assertCondition(t, got, status.ConditionReady, metav1.ConditionTrue, "")
+}
+
+// TestSSHKeyFailOpenIsNotDecidedByOrder.
+//
+// The fail-open decision must be a property of the failure SET, not of whichever
+// selector happened to be listed last. Getting this wrong in the open direction
+// publishes a partial key set as success and asserts a key "no longer exists"
+// when the API in fact refused to answer.
+func TestSSHKeyFailOpenIsNotDecidedByOrder(t *testing.T) {
+	for _, tc := range []struct{ name, first, second string }{
+		{"fatalLast", "gone", "bad"},
+		{"notFoundLast", "bad", "gone"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			nodeClass := newNodeClass()
+			nodeClass.Spec.SSHKeySelectors = []v1alpha1.SSHKeySelectorTerm{{Name: tc.first}, {Name: tc.second}}
+			h := newHarness(t, nodeClass)
+			h.resources.sshKey = func(name string) (*hcloudapi.SSHKey, error) {
+				switch name {
+				case "gone":
+					return nil, &hcloudapi.NotFoundError{Kind: "ssh key", Selector: name}
+				case "bad":
+					return nil, fatalErr
+				}
+				return &hcloudapi.SSHKey{ID: 2, Name: name}, nil
+			}
+
+			nc, err := h.reconcile(ctx)
+			if err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+			// A rejected credential is present in the set either way, so both
+			// orderings must fail closed.
+			assertCondition(t, nc, v1alpha1.ConditionTypeSSHKeysReady, metav1.ConditionFalse, "SSHKeyCredentialRejected")
+			if len(nc.Status.SSHKeys) != 0 {
+				t.Errorf("status.sshKeys = %+v, want none published when the credential was rejected", nc.Status.SSHKeys)
+			}
+		})
+	}
+}
+
+// TestRequeueIntervals pins the values themselves. Nothing else asserts a
+// reconcile.Result, so an interval could otherwise be changed by an order of
+// magnitude unnoticed, and the catalog branch in particular is a full re-resolve
+// whose interval is throttled by nothing.
+func TestRequeueIntervals(t *testing.T) {
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name    string
+		arrange func(*harness)
+		want    time.Duration
+	}{
+		{"resolved", func(*harness) {}, resolvedRequeue},
+		{"missingImage", func(h *harness) {
+			h.resources.image = func() (*hcloudapi.Image, error) {
+				return nil, &hcloudapi.NotFoundError{Kind: "image", Selector: "debian-13"}
+			}
+		}, misconfiguredRequeue},
+		{"catalogNotFetched", func(h *harness) { h.catalog.snapshot = nil }, misconfiguredRequeue},
+		{"catalogEmpty", func(h *harness) { h.catalog.snapshot = emptyCatalog().snapshot }, misconfiguredRequeue},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, newNodeClass())
+			tc.arrange(h)
+
+			var nc v1alpha1.HCloudNodeClass
+			if err := h.client.Get(ctx, h.name, &nc); err != nil {
+				t.Fatal(err)
+			}
+			res, err := h.controller.Reconcile(ctx, &nc)
+			if err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+			if res.RequeueAfter != tc.want {
+				t.Errorf("RequeueAfter = %v, want %v", res.RequeueAfter, tc.want)
+			}
+		})
+	}
+}
+
+// TestNeverResolvedClassNamesTheOutage: an error with no Hetzner code, blocked
+// egress or a DNS failure, classifies transient and retries forever. On a class
+// that has never resolved there is no True condition to protect, so leaving it
+// reading "awaiting reconciliation" indefinitely is a diagnosis of nothing.
+func TestNeverResolvedClassNamesTheOutage(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, newNodeClass())
+	h.resources.image = func() (*hcloudapi.Image, error) { return nil, errors.New("dial tcp: i/o timeout") }
+
+	if _, err := h.reconcile(ctx); err == nil {
+		t.Fatal("expected the transient failure to be returned")
+	}
+
+	var nc v1alpha1.HCloudNodeClass
+	if err := h.client.Get(ctx, h.name, &nc); err != nil {
+		t.Fatal(err)
+	}
+	assertCondition(t, &nc, v1alpha1.ConditionTypeImageReady, metav1.ConditionUnknown, "ImageUnreachable")
+}
+
+// TestResolvedClassSurvivesOutageUntouched is the other half of the above, and
+// the more important one: an already-True condition must NOT be downgraded to
+// Unknown, because core maps Ready=Unknown to NodeClassReady=False and stops
+// the NodePool just as a False would.
+func TestResolvedClassSurvivesOutageUntouched(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, newNodeClass())
+
+	if _, err := h.reconcile(ctx); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+
+	h.resources.image = func() (*hcloudapi.Image, error) { return nil, errors.New("dial tcp: i/o timeout") }
+	if _, err := h.reconcile(ctx); err == nil {
+		t.Fatal("expected the transient failure to be returned")
+	}
+
+	var nc v1alpha1.HCloudNodeClass
+	if err := h.client.Get(ctx, h.name, &nc); err != nil {
+		t.Fatal(err)
+	}
+	assertCondition(t, &nc, v1alpha1.ConditionTypeImageReady, metav1.ConditionTrue, "")
+	assertCondition(t, &nc, status.ConditionReady, metav1.ConditionTrue, "")
+	if nc.Status.Image == nil {
+		t.Error("status.image was cleared by a transient failure")
 	}
 }
 

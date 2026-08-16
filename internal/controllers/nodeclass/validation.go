@@ -20,6 +20,9 @@ import (
 // catalog refresh loop.
 type CatalogProvider interface {
 	Get() *catalog.Snapshot
+	// Refreshed yields a value after each successful catalog refresh, so that
+	// a NodeClass blocked on the catalog is woken rather than polling for it.
+	Refreshed() <-chan struct{}
 }
 
 // reasonDependenciesNotReady is used for both the False and the Unknown form of
@@ -136,11 +139,23 @@ func (v *Validation) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNo
 		}
 		nodeClass.Status.Locations = nil
 		conds.SetUnknownWithReason(v1alpha1.ConditionTypeValidationSucceeded, reason, message)
-		// Short, not misconfiguredRequeue: the expected wait is one catalog
-		// fetch, and a minute of Ready=Unknown on every class after every
-		// restart and every leader-election failover is a blackout the operator
-		// pays for nothing.
-		return reconcile.Result{RequeueAfter: catalogRequeue}, nil
+		// Deliberately a SLOW backstop rather than a poll, because this branch
+		// cannot fix itself by being re-run: the catalog lives in this process,
+		// and the whole reconcile, resolvers included, repeats on every requeue.
+		//
+		// A short interval here is worse than it looks. RequeueAfter routes
+		// through Queue.Forget and AddAfter (controller-runtime's
+		// priorityQueueWrapper.AddWithOpts), which consults NEITHER the
+		// exponential limiter NOR the token bucket, so nothing throttles it.
+		// Five Hetzner GETs every five seconds is 3600 requests an hour from a
+		// single NodeClass, which is the entire per-project limit, shared with
+		// the CCM and the CSI driver. Both triggers can persist: a Hetzner
+		// outage at startup leaves the snapshot nil, and a response shape we do
+		// not expect leaves it non-nil and empty indefinitely.
+		//
+		// Promptness comes from the catalog waking us instead, see the
+		// Refreshed() watch in Register.
+		return reconcile.Result{RequeueAfter: misconfiguredRequeue}, nil
 	}
 
 	if len(locations.inScope) == 0 {

@@ -59,6 +59,7 @@ func (p *PlacementGroup) Reconcile(ctx context.Context, nodeClass *v1alpha1.HClo
 			)
 			return reconcile.Result{RequeueAfter: misconfiguredRequeue}, nil
 		}
+		noteUnreachable(nodeClass.StatusConditions(status.WithClock(p.clk)), v1alpha1.ConditionTypePlacementGroupReady, "PlacementGroup", err)
 		return reconcile.Result{}, fmt.Errorf("resolving placement group, %w", err)
 	}
 

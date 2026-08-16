@@ -55,15 +55,31 @@ func (s *SSHKeys) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNodeC
 	var missing []string
 	var reason string
 	var cause error
+	// Accumulated across the whole loop rather than read off the last failure.
+	// Deciding fail-open versus fail-closed from a single overwritten variable
+	// makes the decision depend on ITERATION ORDER: one missing key and one
+	// rejected credential would fail closed or open according to which selector
+	// happened to be listed last, and in the open direction it publishes a
+	// partial key set as success while claiming the key no longer exists, when
+	// in fact the API refused to answer.
+	failClosed := false
 
 	for _, sel := range nodeClass.Spec.SSHKeySelectors {
 		key, err := s.resources.SSHKey(ctx, sel.Name, sel.ID)
 		if err != nil {
 			r, ok := configFailure(ctx, err)
 			if !ok {
+				noteUnreachable(nodeClass.StatusConditions(status.WithClock(s.clk)), v1alpha1.ConditionTypeSSHKeysReady, "SSHKeys", err)
 				return reconcile.Result{}, fmt.Errorf("resolving ssh key, %w", err)
 			}
-			reason, cause = r, err
+			if r != reasonNotFound {
+				failClosed = true
+			}
+			// The reported reason is the most severe seen, not the most
+			// recent, so it agrees with failClosed.
+			if reason == "" || (r != reasonNotFound && reason == reasonNotFound) {
+				reason, cause = r, err
+			}
 			missing = append(missing, describeSelector(sel.Name, sel.ID))
 			continue
 		}
@@ -72,7 +88,7 @@ func (s *SSHKeys) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNodeC
 
 	conds := nodeClass.StatusConditions(status.WithClock(s.clk))
 
-	if len(missing) > 0 && reason != reasonNotFound {
+	if failClosed {
 		// A rejected credential or a malformed selector: not a statement about
 		// SSH keys, so the fail-open argument above does not apply.
 		nodeClass.Status.SSHKeys = nil

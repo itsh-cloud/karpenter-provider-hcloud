@@ -22,9 +22,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/events"
 	"sigs.k8s.io/karpenter/pkg/operator/injection"
@@ -56,6 +58,10 @@ type Controller struct {
 	kubeClient  client.Client
 	termination *Termination
 	reconcilers []reconcile.TypedReconciler[*v1alpha1.HCloudNodeClass]
+	// catalogRefreshed wakes every NodeClass when the server type catalog
+	// lands. Optional: nil simply means no wake-up, and the slow backstop
+	// requeue in validation still converges.
+	catalogRefreshed <-chan struct{}
 }
 
 // NewController returns the HCloudNodeClass status controller.
@@ -67,9 +73,19 @@ func NewController(
 	catalogProvider CatalogProvider,
 	discovery Discovery,
 ) *Controller {
+	// Guarded because the wake-up is an optimisation, not a dependency: the
+	// backstop requeue converges without it. Constructing a Controller must not
+	// panic on a partially wired provider, since that happens at operator
+	// startup where a panic is a CrashLoopBackOff with no useful message.
+	var catalogRefreshed <-chan struct{}
+	if catalogProvider != nil {
+		catalogRefreshed = catalogProvider.Refreshed()
+	}
+
 	return &Controller{
-		kubeClient:  kubeClient,
-		termination: NewTermination(kubeClient, recorder),
+		kubeClient:       kubeClient,
+		termination:      NewTermination(kubeClient, recorder),
+		catalogRefreshed: catalogRefreshed,
 		reconcilers: []reconcile.TypedReconciler[*v1alpha1.HCloudNodeClass]{
 			NewImage(clk, resources),
 			NewNetwork(clk, resources),
@@ -150,17 +166,22 @@ func (c *Controller) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNo
 // rateLimiter paces retries after a failed pass.
 //
 // Deliberately NOT operatorpkg's reasonable.RateLimiter, which starts at 100ms.
-// One pass here is up to seven uncached Hetzner GETs, so a 100ms base means a
-// single failing NodeClass issues roughly eleven passes, ~77 requests, inside
-// the first hundred seconds of an outage, and the accompanying 10qps/burst-100
-// token bucket lets ten of them do that at once. Against a 3600/hour
-// per-project limit shared with the CCM and the CSI driver, that makes being
-// rate limited cause more requests than being healthy, since rate_limit_exceeded
-// is classified transient and therefore retried.
+// One pass here is five uncached Hetzner GETs for a typical NodeClass and up to
+// eighteen at the CRD's limits (five firewalls plus ten ssh keys), so a 100ms
+// base means a single failing NodeClass issues ten passes inside the first
+// hundred seconds of an outage, and the accompanying 10qps/burst-100 token
+// bucket lets ten NodeClasses do that at once. Against a 3600/hour per-project
+// limit shared with the CCM and the CSI driver, that makes being rate limited
+// cause more requests than being healthy, since rate_limit_exceeded is
+// classified transient and therefore retried.
 //
 // Five seconds to two minutes costs a few seconds of extra latency on a genuine
-// blip and removes the amplifier. The bucket is kept as a ceiling on the whole
-// controller.
+// blip and removes the amplifier.
+//
+// Note that this governs the ERROR path only. A reconcile that returns a
+// RequeueAfter with a nil error goes through Queue.Forget and AddAfter, which
+// consult neither the limiter nor the bucket, so a short RequeueAfter is
+// throttled by nothing at all and has to be chosen on its own merits.
 func rateLimiter() workqueue.TypedRateLimiter[reconcile.Request] {
 	return workqueue.NewTypedMaxOfRateLimiter[reconcile.Request](
 		workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](5*time.Second, 2*time.Minute),
@@ -169,8 +190,8 @@ func rateLimiter() workqueue.TypedRateLimiter[reconcile.Request] {
 }
 
 // Register wires the controller into the manager.
-func (c *Controller) Register(_ context.Context, m manager.Manager) error {
-	return controllerruntime.NewControllerManagedBy(m).
+func (c *Controller) Register(ctx context.Context, m manager.Manager) error {
+	b := controllerruntime.NewControllerManagedBy(m).
 		Named(ControllerName).
 		For(&v1alpha1.HCloudNodeClass{}).
 		Watches(
@@ -220,6 +241,46 @@ func (c *Controller) Register(_ context.Context, m manager.Manager) error {
 		WithOptions(controller.Options{
 			RateLimiter:             rateLimiter(),
 			MaxConcurrentReconciles: 10,
-		}).
-		Complete(reconcile.AsReconciler(m.GetClient(), c))
+		})
+
+	// Waking on the catalog rather than polling for it. Validation cannot
+	// succeed without the server type catalog, and the catalog is refreshed by
+	// a Runnable inside this same process, so there is nothing to poll: a
+	// landing snapshot enqueues every NodeClass once, and the requeue in that
+	// branch stays a slow backstop.
+	//
+	// Every NodeClass, because the signal carries no object. The list is served
+	// from the informer cache, and NodeClasses number in the single digits.
+	if c.catalogRefreshed != nil {
+		events := make(chan event.GenericEvent)
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-c.catalogRefreshed:
+					select {
+					case events <- event.GenericEvent{}:
+					case <-ctx.Done():
+						return
+					}
+				}
+			}
+		}()
+		b = b.WatchesRawSource(source.Channel(events,
+			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, _ client.Object) []reconcile.Request {
+				list := &v1alpha1.HCloudNodeClassList{}
+				if err := m.GetClient().List(ctx, list); err != nil {
+					log.FromContext(ctx).Error(err, "listing HCloudNodeClasses after a catalog refresh")
+					return nil
+				}
+				reqs := make([]reconcile.Request, 0, len(list.Items))
+				for i := range list.Items {
+					reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Name: list.Items[i].Name}})
+				}
+				return reqs
+			})))
+	}
+
+	return b.Complete(reconcile.AsReconciler(m.GetClient(), c))
 }

@@ -65,6 +65,15 @@ type Provider struct {
 	// the cluster has zero instance types, which would look exactly like
 	// everything being unschedulable.
 	stale atomic.Bool
+
+	// refreshed is signalled after each successful refresh, so that controllers
+	// waiting on the catalog can be woken instead of polling for it.
+	//
+	// Buffered by one and written non-blocking: the signal means "look again",
+	// not "here is what changed", so coalescing several refreshes into one
+	// wake-up is correct and a reader that is not listening must never stall
+	// the refresh loop.
+	refreshed chan struct{}
 }
 
 // Option configures a Provider.
@@ -83,11 +92,12 @@ func WithClock(now func() time.Time) Option { return func(p *Provider) { p.now =
 // Start to keep it fresh.
 func NewProvider(client hcloudapi.Catalog, opts ...Option) *Provider {
 	p := &Provider{
-		client:   client,
-		interval: DefaultRefreshInterval,
-		jitter:   DefaultJitter,
-		now:      time.Now,
-		rand:     rand.New(rand.NewSource(time.Now().UnixNano())), //nolint:gosec // jitter, not crypto
+		client:    client,
+		interval:  DefaultRefreshInterval,
+		jitter:    DefaultJitter,
+		now:       time.Now,
+		rand:      rand.New(rand.NewSource(time.Now().UnixNano())), //nolint:gosec // jitter, not crypto
+		refreshed: make(chan struct{}, 1),
 	}
 	for _, o := range opts {
 		o(p)
@@ -104,6 +114,15 @@ func (p *Provider) Get() *Snapshot { return p.snapshot.Load() }
 
 // Stale reports whether the last refresh failed. The snapshot is still served.
 func (p *Provider) Stale() bool { return p.stale.Load() }
+
+// Refreshed yields a value after each successful refresh.
+//
+// This exists so that a controller which cannot proceed without the catalog can
+// WAIT rather than POLL. The difference is not cosmetic: a controller polling
+// for it re-runs its whole reconcile, and if that reconcile makes Hetzner calls
+// then the act of waiting for the catalog spends the very rate limit the
+// catalog needs to arrive, on every object, for as long as the outage lasts.
+func (p *Provider) Refreshed() <-chan struct{} { return p.refreshed }
 
 // Refresh fetches the catalog once.
 //
@@ -130,6 +149,14 @@ func (p *Provider) Refresh(ctx context.Context) error {
 		FetchedAt:          p.now(),
 	})
 	p.stale.Store(false)
+
+	select {
+	case p.refreshed <- struct{}{}:
+	default:
+		// A wake-up is already pending and has not been consumed. Since the
+		// signal carries no payload, one pending wake-up covers this refresh
+		// too, and dropping it keeps the refresh loop non-blocking.
+	}
 	return nil
 }
 
@@ -163,19 +190,24 @@ func (p *Provider) Start(ctx context.Context) error {
 			// silently loses read on server types.
 			if err := p.Refresh(ctx); err != nil {
 				log.FromContext(ctx).Error(err, "catalog refresh failed, serving the last good snapshot",
-					"class", hcloudapi.Classify(err).String(), "staleFor", p.now().Sub(p.lastSuccess()).Truncate(time.Second).String())
+					"class", hcloudapi.Classify(err).String(), "staleFor", p.staleFor())
 			}
 		}
 	}
 }
 
-// lastSuccess is when the served snapshot was fetched, or the zero time if
-// there has never been one.
-func (p *Provider) lastSuccess() time.Time {
-	if s := p.snapshot.Load(); s != nil {
-		return s.FetchedAt
+// staleFor renders how long the served snapshot has been stale, for logging.
+//
+// "never" rather than an age when nothing has ever been fetched, which is the
+// common case here: the first refresh failing is the precondition for the loop
+// to log at all, and subtracting from the zero time prints a meaningless
+// 2562047h.
+func (p *Provider) staleFor() string {
+	s := p.snapshot.Load()
+	if s == nil {
+		return "never fetched"
 	}
-	return time.Time{}
+	return p.now().Sub(s.FetchedAt).Truncate(time.Second).String()
 }
 
 func (p *Provider) nextInterval() time.Duration {

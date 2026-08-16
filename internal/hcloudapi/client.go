@@ -3,6 +3,7 @@ package hcloudapi
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
@@ -37,12 +38,24 @@ func NewClientFromEnv() (*hcloud.Client, error) {
 	if token == "" {
 		return nil, fmt.Errorf("%s is not set", TokenEnvVar)
 	}
-	// Reported by length only. The value is a credential and must not reach a
-	// log line, an error string that ends up on a NodeClass condition, or a
-	// Kubernetes event.
+	// Reported by shape only, never by value. The token is a credential and
+	// must not reach a log line, an error string that ends up on a NodeClass
+	// condition, or a Kubernetes event.
+	//
+	// Both checks exist so that a malformed secret is named HERE, at startup.
+	// Left to hcloud-go, a token containing a character illegal in an HTTP
+	// header fails on every call with an error carrying no Hetzner error code,
+	// which Classify therefore treats as transient, so the provider would retry
+	// forever with nothing on any NodeClass explaining why.
 	if len(token) != tokenLength {
 		return nil, fmt.Errorf("%s is %d characters, expected %d; check the secret for a truncated value or trailing whitespace",
 			TokenEnvVar, len(token), tokenLength)
+	}
+	if idx := strings.IndexFunc(token, func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9')
+	}); idx >= 0 {
+		return nil, fmt.Errorf("%s contains a non-alphanumeric character at position %d; check the secret for a newline or a copied-in quote",
+			TokenEnvVar, idx)
 	}
 
 	return hcloud.NewClient(

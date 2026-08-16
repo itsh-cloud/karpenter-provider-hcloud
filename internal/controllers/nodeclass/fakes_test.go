@@ -99,9 +99,19 @@ func workingDiscovery() *fakeDiscovery {
 }
 
 // fakeCatalog serves a fixed snapshot.
-type fakeCatalog struct{ snapshot *catalog.Snapshot }
+type fakeCatalog struct {
+	snapshot  *catalog.Snapshot
+	refreshed chan struct{}
+}
 
 func (f *fakeCatalog) Get() *catalog.Snapshot { return f.snapshot }
+
+func (f *fakeCatalog) Refreshed() <-chan struct{} {
+	if f.refreshed == nil {
+		f.refreshed = make(chan struct{}, 1)
+	}
+	return f.refreshed
+}
 
 // twoLocationCatalog offers one x86 server type in nbg1 and fsn1, both in
 // eu-central, plus a type in a second network zone so that zone filtering has

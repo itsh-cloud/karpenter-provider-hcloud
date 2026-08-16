@@ -52,6 +52,7 @@ func (i *Image) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNodeCla
 		// NodeClassReady=False on every NodePool using it. A class that was
 		// never resolved still reads Unknown from initialisation, so nothing
 		// provisions against an unknown image either.
+		noteUnreachable(nodeClass.StatusConditions(status.WithClock(i.clk)), v1alpha1.ConditionTypeImageReady, "Image", err)
 		return reconcile.Result{}, fmt.Errorf("resolving image, %w", err)
 	}
 
