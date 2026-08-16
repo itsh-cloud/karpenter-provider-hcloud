@@ -106,10 +106,46 @@ type catalogClient struct{ c *hcloud.Client }
 // NewCatalog returns a Catalog backed by the given hcloud client.
 func NewCatalog(c *hcloud.Client) Catalog { return &catalogClient{c: c} }
 
+// networkZones maps location name to network zone.
+//
+// A server can only attach to a private network in its own network zone, so
+// this is a hard placement bound rather than a preference. One extra call per
+// catalog refresh, which is every ten minutes.
+func (a *catalogClient) networkZones(ctx context.Context) (map[string]string, error) {
+	locs, err := a.c.Location.All(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing locations: %w", err)
+	}
+	zones := make(map[string]string, len(locs))
+	for _, l := range locs {
+		if l == nil {
+			continue
+		}
+		zones[l.Name] = string(l.NetworkZone)
+	}
+	return zones, nil
+}
+
 func (a *catalogClient) ServerTypes(ctx context.Context) ([]ServerType, error) {
 	sts, err := a.c.ServerType.All(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing server types: %w", err)
+	}
+
+	// The network zone has to come from /v1/locations, and joining it in here
+	// is not an optimisation.
+	//
+	// The location objects embedded in /v1/server_types carry only id, name,
+	// recommended, available and the deprecation fields. network_zone is NOT
+	// among them, so hcloud-go materialises a *Location whose NetworkZone is
+	// the empty string. Reading it there yields "" for every location, which is
+	// silent: it produces an empty karpenter.itsh.dev/network-zone label on
+	// every node, and it makes the NodeClass zone check compare "" against the
+	// private network's real zone and conclude that every location on earth is
+	// outside it.
+	zones, err := a.networkZones(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	out := make([]ServerType, 0, len(sts))
@@ -136,8 +172,10 @@ func (a *catalogClient) ServerTypes(ctx context.Context) ([]ServerType, error) {
 				continue
 			}
 			locs = append(locs, ServerTypeLocation{
-				Location:    l.Location.Name,
-				NetworkZone: string(l.Location.NetworkZone),
+				Location: l.Location.Name,
+				// From the locations listing, never from l.Location: see
+				// networkZones.
+				NetworkZone: zones[l.Location.Name],
 				Available:   l.Available,
 				Recommended: l.Recommended,
 				Deprecated:  l.IsDeprecated(),

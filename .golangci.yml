@@ -27,7 +27,14 @@ linters:
       # the specific linter and a reason keeps every suppression reviewable.
       require-explanation: true
       require-specific: true
-      allow-unused: false
+      # Unused directives are tolerated, deliberately. Whether staticcheck
+      # reports SA1019 for a deprecated upstream call turns out to depend on the
+      # Go toolchain the linter was built against, so the same directive is live
+      # in CI and dead locally at the identical golangci-lint version. Failing on
+      # that makes the config unportable without saying anything about the code.
+      # The two rules above are the ones with teeth: every suppression must name
+      # its linter and carry a reason.
+      allow-unused: true
 
   exclusions:
     rules:

@@ -291,3 +291,68 @@ func TestFirewallTransportErrorMidListIsRetried(t *testing.T) {
 	}
 	assertCondition(t, &nc, v1alpha1.ConditionTypeFirewallsReady, metav1.ConditionUnknown, "")
 }
+
+// TestLocationsAreNotJudgedAgainstAnEmptyZone.
+//
+// A regression test for a bug that no unit test could have caught, because the
+// fixtures all supplied a NetworkZone the real API does not return.
+//
+// /v1/server_types embeds a location object carrying only id, name,
+// recommended, available and deprecation. There is no network_zone, so reading
+// it from there produced "" for every location. Against a NodeClass whose
+// private network really is in eu-central, every location then compared
+// unequal and validation reported that nbg1 and fsn1 were "outside the private
+// network's zone", which is both false and unactionable.
+//
+// The zone now comes from /v1/locations. This test pins the consequence rather
+// than the plumbing: a catalog that reports no zone must never be read as
+// "every location is in the wrong zone".
+func TestLocationsAreNotJudgedAgainstAnEmptyZone(t *testing.T) {
+	nodeClass := &v1alpha1.HCloudNodeClass{
+		Spec: v1alpha1.HCloudNodeClassSpec{Locations: []string{"nbg1", "fsn1"}},
+	}
+	nodeClass.Status.Network = &v1alpha1.NetworkStatus{Name: "k8s-network", Zone: "eu-central"}
+
+	snapshot := &catalog.Snapshot{ServerTypes: []hcloudapi.ServerType{{
+		Name:         "cx43",
+		Architecture: SupportedArchitecture,
+		Locations: []hcloudapi.ServerTypeLocation{
+			// The shape the bug produced: a real location, no zone.
+			{Location: "nbg1", NetworkZone: ""},
+			{Location: "fsn1", NetworkZone: ""},
+		},
+	}}}
+
+	got := locationScope(snapshot, nodeClass)
+	if len(got.outsideZone) > 0 {
+		t.Errorf("locations %v reported outside the network zone on the strength of an empty zone; "+
+			"an unknown zone is not evidence of a mismatch", got.outsideZone)
+	}
+}
+
+// TestNetworkZoneBoundStillApplies is the other half: once the zone is really
+// known, a location in a different one genuinely cannot be used, because a
+// server cannot attach to a private network across zones.
+func TestNetworkZoneBoundStillApplies(t *testing.T) {
+	nodeClass := &v1alpha1.HCloudNodeClass{
+		Spec: v1alpha1.HCloudNodeClassSpec{Locations: []string{"nbg1", "hil"}},
+	}
+	nodeClass.Status.Network = &v1alpha1.NetworkStatus{Name: "k8s-network", Zone: "eu-central"}
+
+	snapshot := &catalog.Snapshot{ServerTypes: []hcloudapi.ServerType{{
+		Name:         "cx43",
+		Architecture: SupportedArchitecture,
+		Locations: []hcloudapi.ServerTypeLocation{
+			{Location: "nbg1", NetworkZone: "eu-central"},
+			{Location: "hil", NetworkZone: "us-west"},
+		},
+	}}}
+
+	got := locationScope(snapshot, nodeClass)
+	if len(got.inScope) != 1 || got.inScope[0].Name != "nbg1" {
+		t.Errorf("inScope = %+v, want only nbg1", got.inScope)
+	}
+	if len(got.outsideZone) != 1 || got.outsideZone[0] != "hil" {
+		t.Errorf("outsideZone = %v, want only hil", got.outsideZone)
+	}
+}

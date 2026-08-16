@@ -288,7 +288,16 @@ func locationScope(snapshot *catalog.Snapshot, nodeClass *v1alpha1.HCloudNodeCla
 		switch {
 		case !offered:
 			out.unknown = append(out.unknown, name)
-		case networkZone != "" && zone != networkZone:
+		// Excluded only when the location's zone is KNOWN and differs.
+		//
+		// The zone != networkZone test alone treats an unknown zone as a proven
+		// mismatch, which is the wrong way round: absence of evidence is not
+		// evidence of absence, and the cost of the two mistakes is wildly
+		// asymmetric. Wrongly excluding is total and self-inflicted, every
+		// location drops out and the NodeClass reports that nbg1 is not in
+		// eu-central. Wrongly including surfaces as one create failing against
+		// the real network with an error that names it.
+		case zone != "" && networkZone != "" && zone != networkZone:
 			out.outsideZone = append(out.outsideZone, name)
 		default:
 			out.inScope = append(out.inScope, v1alpha1.LocationStatus{
