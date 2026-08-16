@@ -1,0 +1,257 @@
+// Package instance turns a scheduled NodeClaim into a running Hetzner server.
+package instance
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sort"
+
+	"sigs.k8s.io/controller-runtime/pkg/log"
+	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
+	"sigs.k8s.io/karpenter/pkg/cloudprovider"
+	"sigs.k8s.io/karpenter/pkg/scheduling"
+
+	"github.com/itsh-cloud/karpenter-provider-hcloud/api/v1alpha1"
+	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/hcloudapi"
+	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/providers/instancetype"
+)
+
+// DefaultMaxCreateAttempts bounds how many (type, location) candidates one
+// Create walks before giving up.
+//
+// Not unbounded: each attempt costs a POST plus an action wait, so a project
+// that is genuinely out of capacity everywhere would otherwise spend minutes
+// and a large slice of the shared 3600/hour rate limit discovering that. Eight
+// is deep enough to cross several server types and both locations.
+const DefaultMaxCreateAttempts = 8
+
+// Candidate is one (instance type, location) pair a NodeClaim could be
+// satisfied by.
+type Candidate struct {
+	InstanceType *cloudprovider.InstanceType
+	Offering     *cloudprovider.Offering
+	Location     string
+	Price        float64
+}
+
+// Provider creates, deletes and reads the servers backing NodeClaims.
+type Provider struct {
+	servers     hcloudapi.Servers
+	unavailable *instancetype.Unavailable
+	clusterName string
+	maxAttempts int
+	cache       *listCache
+}
+
+// NewProvider returns an instance provider.
+func NewProvider(servers hcloudapi.Servers, unavailable *instancetype.Unavailable, clusterName string) *Provider {
+	return &Provider{
+		servers:     servers,
+		unavailable: unavailable,
+		clusterName: clusterName,
+		maxAttempts: DefaultMaxCreateAttempts,
+		cache:       newListCache(servers, DefaultListTTL, nil),
+	}
+}
+
+// errNoClusterName guards every path whose selector would otherwise match the
+// entire Hetzner project, control plane included.
+var errNoClusterName = errors.New("cluster name is empty, refusing to act on unowned servers")
+
+// errNotManaged reports a server this cluster's provider does not own.
+//
+// A distinct type rather than a string, so a caller can tell "I will not touch
+// this" apart from "the API call failed": the first must never be retried and
+// must be loud, because it means something asked us to delete a machine that
+// is not ours.
+type errNotManaged struct {
+	name string
+	id   int64
+}
+
+func (e errNotManaged) Error() string {
+	return fmt.Sprintf("server %q (id %d) does not carry this cluster's %s label; refusing to touch it",
+		e.name, e.id, hcloudapi.LabelManagedBy)
+}
+
+// Create orders a server for nodeClaim, falling through to the next-cheapest
+// candidate on a capacity failure.
+//
+// # Why the ordering is re-derived here
+//
+// Karpenter core computes a price ordering and then loses it in transit. In
+// scheduling/nodeclaimtemplate.go it does OrderByPrice and serialises the
+// result into a NodeSelectorRequirement on node.kubernetes.io/instance-type,
+// but Requirements is a Go map and NodeSelectorRequirements() iterates it
+// unordered. Any provider that walks the requirement's values, or the API's
+// listing order, therefore picks essentially at random.
+//
+// That is the difference between one correct replacement and a fleet that
+// converges on whatever the map happened to yield first, which is the founding
+// incident of this project. So the ordering is recomputed here from this
+// provider's own catalog, and core's requirement is used only as a filter.
+func (p *Provider) Create(
+	ctx context.Context,
+	nodeClass *v1alpha1.HCloudNodeClass,
+	nodeClaim *karpv1.NodeClaim,
+	instanceTypes []*cloudprovider.InstanceType,
+	userData string,
+) (*hcloudapi.Server, *cloudprovider.InstanceType, error) {
+	candidates := p.orderedCandidates(nodeClaim, instanceTypes)
+	if len(candidates) == 0 {
+		return nil, nil, cloudprovider.NewInsufficientCapacityError(
+			fmt.Errorf("no instance type in this NodeClaim's requirements is offered in any location the NodeClass allows"))
+	}
+
+	req, err := p.baseRequest(nodeClass, nodeClaim, userData)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	attempts := min(len(candidates), p.maxAttempts)
+	var lastErr error
+	for i := range attempts {
+		c := candidates[i]
+		req.ServerType = c.InstanceType.Name
+		req.Location = c.Location
+
+		srv, err := p.servers.Create(ctx, req)
+		if err == nil {
+			return srv, c.InstanceType, nil
+		}
+		lastErr = err
+
+		class := hcloudapi.Classify(err)
+		code, _ := hcloudapi.Code(err)
+
+		switch class {
+		case hcloudapi.ClassCapacity:
+			// The whole point of the fall-through, and it fires on every
+			// capacity-class code rather than only resource_unavailable:
+			// placement_error and no_space_left_in_location are equally
+			// "not here, not now".
+			p.unavailable.Mark(c.InstanceType.Name, c.Location, code)
+			log.FromContext(ctx).V(1).Info("capacity unavailable, falling through to the next candidate",
+				"serverType", c.InstanceType.Name, "location", c.Location, "code", code)
+			continue
+
+		case hcloudapi.ClassConfig:
+			if code == string(hcloudUniquenessError) {
+				// A previous attempt's HTTP response was lost, but the server
+				// was created. Adopt it rather than failing: the alternative
+				// leaks a running, billing server that nothing owns.
+				if adopted, aErr := p.adopt(ctx, req.Name, nodeClaim); aErr == nil && adopted != nil {
+					log.FromContext(ctx).Info("adopted a server from a lost create response", "server", adopted.Name, "id", adopted.ID)
+					p.cache.invalidate()
+					return adopted, c.InstanceType, nil
+				}
+			}
+			// Anything else here will not succeed on another server type,
+			// because it is a statement about the request, not about capacity.
+			return nil, nil, cloudprovider.NewCreateError(err, "CreateFailed", err.Error())
+
+		case hcloudapi.ClassQuota:
+			// A different server type does not help: the project is at a
+			// limit. Surfaced as insufficient capacity so core stops trying,
+			// rather than as a create error that would fail the NodeClaim.
+			return nil, nil, cloudprovider.NewInsufficientCapacityError(err)
+
+		case hcloudapi.ClassFatal:
+			log.FromContext(ctx).Error(err, "the Hetzner credential was rejected while creating a server; "+
+				"every retry burns rate limit shared with the CCM and the CSI driver")
+			return nil, nil, cloudprovider.NewCreateError(err, "CredentialRejected", err.Error())
+
+		default:
+			// Transient. Return rather than burning the remaining candidates
+			// on what is probably a network problem; core retries the whole
+			// launch with backoff.
+			return nil, nil, fmt.Errorf("creating server, %w", err)
+		}
+	}
+
+	return nil, nil, cloudprovider.NewInsufficientCapacityError(
+		fmt.Errorf("no capacity after %d attempts across %d candidates, last error: %w", attempts, len(candidates), lastErr))
+}
+
+// hcloudUniquenessError is the code Hetzner returns for a name already in use.
+const hcloudUniquenessError = "uniqueness_error"
+
+// adopt recovers the server from a create whose response never arrived.
+//
+// Matched on BOTH our ownership label and the NodeClaim label, never on the
+// name alone: a name collision with something we do not own must fail loudly
+// rather than silently hand another system's server to karpenter, which would
+// then manage and eventually delete it.
+func (p *Provider) adopt(ctx context.Context, name string, nodeClaim *karpv1.NodeClaim) (*hcloudapi.Server, error) {
+	srv, err := p.servers.GetByName(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if srv == nil {
+		return nil, fmt.Errorf("server %q reported as duplicate but not found", name)
+	}
+	if !srv.IsManagedBy(p.clusterName) || srv.Labels[hcloudapi.LabelNodeClaim] != nodeClaim.Name {
+		return nil, fmt.Errorf("server %q exists but is not ours to adopt", name)
+	}
+	return srv, nil
+}
+
+// orderedCandidates expands instance types into (type, location) pairs that
+// satisfy the NodeClaim, cheapest first.
+func (p *Provider) orderedCandidates(nodeClaim *karpv1.NodeClaim, instanceTypes []*cloudprovider.InstanceType) []Candidate {
+	reqs := scheduling.NewNodeSelectorRequirementsWithMinValues(nodeClaim.Spec.Requirements...)
+
+	var out []Candidate
+	for _, it := range instanceTypes {
+		if err := it.Requirements.Compatible(reqs, scheduling.AllowUndefinedWellKnownLabels); err != nil {
+			continue
+		}
+		// Resources are checked once per type rather than per offering: an
+		// offering differs only in where it is, never in what it is.
+		if !resourcesFit(nodeClaim, it) {
+			continue
+		}
+		for _, o := range it.Offerings {
+			if !o.Available {
+				continue
+			}
+			if err := o.Requirements.Compatible(reqs, scheduling.AllowUndefinedWellKnownLabels); err != nil {
+				continue
+			}
+			loc := o.Requirements.Get(corev1RegionLabel).Any()
+			if loc == "" {
+				continue
+			}
+			out = append(out, Candidate{InstanceType: it, Offering: o, Location: loc, Price: o.Price})
+		}
+	}
+
+	// Cheapest first, then deterministic tiebreaks. The tiebreaks are not
+	// cosmetic: without them two equally priced candidates swap order between
+	// passes, so a replacement can pick a different type each time and the
+	// fleet never settles.
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Price != out[j].Price {
+			return out[i].Price < out[j].Price
+		}
+		if out[i].InstanceType.Name != out[j].InstanceType.Name {
+			return out[i].InstanceType.Name < out[j].InstanceType.Name
+		}
+		return out[i].Location < out[j].Location
+	})
+	return out
+}
+
+// resourcesFit reports whether the instance type can hold what the NodeClaim
+// asked for, after the type's own overhead is taken out.
+func resourcesFit(nodeClaim *karpv1.NodeClaim, it *cloudprovider.InstanceType) bool {
+	allocatable := it.Allocatable()
+	for name, requested := range nodeClaim.Spec.Resources.Requests {
+		available, ok := allocatable[name]
+		if !ok || available.Cmp(requested) < 0 {
+			return false
+		}
+	}
+	return true
+}

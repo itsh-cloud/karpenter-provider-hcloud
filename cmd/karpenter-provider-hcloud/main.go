@@ -14,10 +14,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/karpenter/pkg/operator"
 
+	corecontrollers "sigs.k8s.io/karpenter/pkg/controllers"
+	"sigs.k8s.io/karpenter/pkg/controllers/state"
+
+	hcloudprovider "github.com/itsh-cloud/karpenter-provider-hcloud/internal/cloudprovider"
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/controllers"
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/hcloudapi"
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/providers/bootstrap"
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/providers/catalog"
+	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/providers/instance"
+	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/providers/instancetype"
 )
 
 // version is stamped at build time via -ldflags "-X main.version=...".
@@ -64,6 +70,32 @@ func main() {
 		os.Exit(1)
 	}
 
+	clusterName := os.Getenv(clusterNameEnvVar)
+	if clusterName == "" {
+		// Fatal, not defaulted. This value becomes the karpenter.sh/managed-by
+		// label on every server, and that label is the ownership check every
+		// destructive path gates on. Defaulting it would let two clusters
+		// sharing one Hetzner project delete each other's nodes, and would make
+		// "is this ours?" answerable by accident.
+		log.FromContext(ctx).Error(nil, "refusing to start", "reason", clusterNameEnvVar+" is not set")
+		os.Exit(1)
+	}
+
+	discovery := bootstrap.NewDiscoveryFromManager(op.Manager)
+	unavailable := instancetype.NewUnavailable()
+	instanceProvider := instance.NewProvider(hcloudapi.NewServers(hcloudClient), unavailable, clusterName)
+
+	cloudProvider := hcloudprovider.New(
+		op.GetClient(),
+		instanceProvider,
+		catalogProvider,
+		unavailable,
+		bootstrap.NewProvider(bootstrap.NewTokenMinter(op.GetClient()), discovery, clusterName),
+		clusterName,
+	)
+
+	cluster := state.NewCluster(op.Clock, op.GetClient(), cloudProvider)
+
 	op.WithControllers(ctx, controllers.NewControllers(
 		op.Clock,
 		op.GetClient(),
@@ -82,6 +114,21 @@ func main() {
 		catalogProvider,
 		// Uncached and direct, which is not interchangeable with GetClient:
 		// see NewDiscoveryFromManager.
-		bootstrap.NewDiscoveryFromManager(op.Manager),
+		discovery,
+	)...).WithControllers(ctx, corecontrollers.NewControllers(
+		ctx,
+		op.Manager,
+		op.Clock,
+		op.GetClient(),
+		op.EventRecorder,
+		cloudProvider,
+		// The undecorated provider is the same one: node overlays are not
+		// enabled, so there is no decoration to see past.
+		cloudProvider,
+		cluster,
+		op.InstanceTypeStore,
 	)...).Start(ctx)
 }
+
+// clusterNameEnvVar names the cluster, and therefore what this controller owns.
+const clusterNameEnvVar = "CLUSTER_NAME"
