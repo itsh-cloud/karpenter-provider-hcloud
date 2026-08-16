@@ -34,9 +34,15 @@ func (f *fakeProvider) Delete(_ context.Context, providerID string) error {
 	return nil
 }
 
+// nextID keeps server ids unique. Deriving one from the name length collides
+// for equal-length names, which would give two servers the same providerID and
+// let a multi-server test pass without proving anything.
+var nextID int64
+
 func server(name string, ageMinutes int, claim string) *hcloudapi.Server {
+	nextID++
 	s := &hcloudapi.Server{
-		ID:      int64(len(name)),
+		ID:      nextID,
 		Name:    name,
 		Created: now.Add(-time.Duration(ageMinutes) * time.Minute),
 		Labels:  map[string]string{hcloudapi.LabelManagedBy: testCluster},
@@ -61,14 +67,58 @@ func newTest(t *testing.T, p *fakeProvider, claims ...client.Object) *Controller
 // booted with a valid join token, registered as a Node, and bills forever with
 // no NodeClaim referring to it.
 func TestReapsOrphans(t *testing.T) {
-	p := &fakeProvider{servers: []*hcloudapi.Server{server("orphan", 30, "orphan")}}
-	c := newTest(t, p)
+	p := &fakeProvider{servers: []*hcloudapi.Server{
+		server("worker-1", 60, "worker-1"),
+		server("orphan", 30, "orphan"),
+	}}
+	// A live NodeClaim alongside it, which is what a real leak looks like: one
+	// stray server among working ones, never a fleet of them.
+	c := newTest(t, p, nodeClaim("worker-1"))
 
 	if _, err := c.Reconcile(context.Background()); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 	if len(p.deleted) != 1 {
-		t.Fatalf("deleted %v, want the orphan removed", p.deleted)
+		t.Fatalf("deleted %v, want only the orphan removed", p.deleted)
+	}
+}
+
+// TestRefusesToSweepWhenThereAreNoNodeClaimsAtAll.
+//
+// Zero NodeClaims against live servers is not a fleet of orphans. It is what a
+// lost list, a wiped CRD, or somebody's `kubectl delete nodeclaims --all` looks
+// like from in here, and acting on it deletes every node the cluster runs,
+// undrained, in a single pass. A genuine leak is a handful of servers against a
+// populated list, which the next sweep still catches.
+func TestRefusesToSweepWhenThereAreNoNodeClaimsAtAll(t *testing.T) {
+	p := &fakeProvider{servers: []*hcloudapi.Server{
+		server("worker-1", 60, "worker-1"),
+		server("worker-2", 60, "worker-2"),
+		server("worker-3", 60, "worker-3"),
+	}}
+	c := newTest(t, p) // no NodeClaims at all
+
+	if _, err := c.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(p.deleted) != 0 {
+		t.Errorf("deleted %v; an empty NodeClaim list must never authorise deleting the whole fleet", p.deleted)
+	}
+}
+
+// TestSkipsServersWithNoCreationTime: an unknown age must not read as
+// infinitely old on a path that deletes machines.
+func TestSkipsServersWithNoCreationTime(t *testing.T) {
+	orphan := server("orphan", 30, "orphan")
+	orphan.Created = time.Time{}
+	p := &fakeProvider{servers: []*hcloudapi.Server{server("worker-1", 60, "worker-1"), orphan}}
+	c := newTest(t, p, nodeClaim("worker-1"))
+
+	if _, err := c.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(p.deleted) != 0 {
+		t.Errorf("deleted %v, whose creation time is unknown; unknown age must mean cannot judge", p.deleted)
 	}
 }
 
@@ -94,8 +144,11 @@ func TestKeepsServersWithLiveNodeClaims(t *testing.T) {
 // asked to build, then does it again, forever.
 func TestDoesNotReapServersYoungerThanTheFloor(t *testing.T) {
 	for _, age := range []int{0, 1, 4} {
-		p := &fakeProvider{servers: []*hcloudapi.Server{server("in-flight", age, "in-flight")}}
-		c := newTest(t, p)
+		p := &fakeProvider{servers: []*hcloudapi.Server{
+			server("worker-1", 60, "worker-1"),
+			server("in-flight", age, "in-flight"),
+		}}
+		c := newTest(t, p, nodeClaim("worker-1"))
 
 		if _, err := c.Reconcile(context.Background()); err != nil {
 			t.Fatalf("Reconcile: %v", err)
@@ -127,8 +180,11 @@ func TestMatchesOnNameNotProviderID(t *testing.T) {
 // TestIgnoresServersWithoutANodeClaimLabel: something else made it, or it
 // predates this provider. Either way it is not ours to reap.
 func TestIgnoresServersWithoutANodeClaimLabel(t *testing.T) {
-	p := &fakeProvider{servers: []*hcloudapi.Server{server("unlabelled", 120, "")}}
-	c := newTest(t, p)
+	p := &fakeProvider{servers: []*hcloudapi.Server{
+		server("worker-1", 60, "worker-1"),
+		server("unlabelled", 120, ""),
+	}}
+	c := newTest(t, p, nodeClaim("worker-1"))
 
 	if _, err := c.Reconcile(context.Background()); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -167,7 +223,9 @@ func TestRequeuesOnTheInterval(t *testing.T) {
 	}{
 		{"noServers", &fakeProvider{}, nil},
 		{"serversAllLive", &fakeProvider{servers: []*hcloudapi.Server{server("worker-1", 60, "worker-1")}}, []client.Object{nodeClaim("worker-1")}},
-		{"serversWithAnOrphan", &fakeProvider{servers: []*hcloudapi.Server{server("orphan", 60, "orphan")}}, nil},
+		{"serversWithAnOrphan", &fakeProvider{servers: []*hcloudapi.Server{
+			server("worker-1", 60, "worker-1"), server("orphan", 60, "orphan"),
+		}}, []client.Object{nodeClaim("worker-1")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := newTest(t, tc.p, tc.claims...)

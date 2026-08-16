@@ -9,6 +9,7 @@ import (
 
 	"github.com/awslabs/operatorpkg/reconciler"
 	"github.com/awslabs/operatorpkg/singleton"
+	"go.uber.org/multierr"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/clock"
 	controllerruntime "sigs.k8s.io/controller-runtime"
@@ -111,10 +112,34 @@ func (c *Controller) Reconcile(ctx context.Context) (reconciler.Result, error) {
 		live.Insert(nodeClaims.Items[i].Name)
 	}
 
+	// No NodeClaims at all, but servers that say they belong to some, is not a
+	// fleet of orphans. It is what a lost list, a wiped CRD, or somebody's
+	// `kubectl delete nodeclaims --all` looks like from here, and acting on it
+	// deletes every node this cluster runs, undrained, in one pass.
+	//
+	// A genuine leak is one or a few servers against a populated list, which
+	// this still reaps on the next sweep two minutes later. Refusing the
+	// all-or-nothing shape costs that case nothing and takes the worst outcome
+	// off the table entirely.
+	if len(live) == 0 {
+		log.FromContext(ctx).Info("refusing to garbage collect: there are no NodeClaims at all, "+
+			"which is indistinguishable from having lost them rather than from every server being an orphan",
+			"servers", len(servers))
+		return reconciler.Result{RequeueAfter: interval}, nil
+	}
+
 	var errs []error
 	for _, srv := range servers {
 		claim := srv.Labels[hcloudapi.LabelNodeClaim]
 		if claim == "" || live.Has(claim) {
+			continue
+		}
+		// A missing creation time reads as an age of ~2.5 million hours, which
+		// would reap instantly. Unknown age means "cannot judge", and on a path
+		// that deletes machines that has to resolve to leaving it alone.
+		if srv.Created.IsZero() {
+			log.FromContext(ctx).Info("skipping a server with no creation time; its age cannot be judged",
+				"server", srv.Name, "id", srv.ID)
 			continue
 		}
 		if age := c.clock.Since(srv.Created); age < minAge {
@@ -134,7 +159,7 @@ func (c *Controller) Reconcile(ctx context.Context) (reconciler.Result, error) {
 		}
 	}
 	if len(errs) > 0 {
-		return reconciler.Result{}, fmt.Errorf("garbage collecting orphaned servers: %w", errs[0])
+		return reconciler.Result{}, fmt.Errorf("garbage collecting orphaned servers: %w", multierr.Combine(errs...))
 	}
 	return reconciler.Result{RequeueAfter: interval}, nil
 }

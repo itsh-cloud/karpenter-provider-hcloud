@@ -198,10 +198,14 @@ func (p *Provider) Create(
 }
 
 // HasCandidates reports whether any (type, location) pair could satisfy this
-// NodeClaim, without ordering them or touching the Hetzner API.
+// NodeClaim, without touching the Hetzner API.
 //
-// Exists so the caller can avoid minting a join token for a NodeClaim that has
-// nowhere to go.
+// Exists so the caller can avoid minting a join token, which is a live
+// cluster-join credential, for a NodeClaim that has nowhere to go. It does
+// order the candidates as a side effect of reusing the same function; that is
+// pure and cheap against a catalog of a few dozen types, and sharing one
+// definition of "a valid candidate" with Create matters more than saving the
+// sort.
 func (p *Provider) HasCandidates(nodeClaim *karpv1.NodeClaim, instanceTypes []*cloudprovider.InstanceType) bool {
 	return len(p.orderedCandidates(nodeClaim, instanceTypes)) > 0
 }

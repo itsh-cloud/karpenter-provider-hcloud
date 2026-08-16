@@ -17,6 +17,7 @@ import (
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/hcloudapi"
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/providers/bootstrap"
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/providers/catalog"
+	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/providers/instance"
 )
 
 // The controllers take narrowed interfaces so they can be tested without a
@@ -26,6 +27,7 @@ import (
 var (
 	_ nodeclass.CatalogProvider = (*catalog.Provider)(nil)
 	_ nodeclass.Discovery       = (*bootstrap.Discovery)(nil)
+	_ instancegc.Provider       = (*instance.Provider)(nil)
 
 	// The status controller registered below is generic over status.Object, so
 	// without this the first thing to notice a drifted GetConditions or
