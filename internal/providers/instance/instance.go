@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/itsh-cloud/karpenter-provider-hcloud/api/v1alpha1"
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/hcloudapi"
+	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/metrics"
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/providers/instancetype"
 )
 
@@ -109,6 +111,7 @@ func (p *Provider) Create(
 	}
 
 	attempts := min(len(candidates), p.maxAttempts)
+	started := time.Now()
 	var lastErr error
 	for i := range attempts {
 		c := candidates[i]
@@ -117,6 +120,11 @@ func (p *Provider) Create(
 
 		srv, err := p.servers.Create(ctx, req)
 		if err == nil {
+			// Measured across the WHOLE Create, fall-through included, because
+			// the expensive case is the one that walked several out-of-stock
+			// candidates and that is what an operator is trying to see.
+			metrics.LaunchDuration.WithLabelValues(c.InstanceType.Name, c.Location, "succeeded").
+				Observe(time.Since(started).Seconds())
 			// So the next List reflects a server we just made. Without this,
 			// core's garbage collector can read a cached listing that predates
 			// the create and reap the NodeClaim behind a live node.
@@ -127,6 +135,13 @@ func (p *Provider) Create(
 
 		class := hcloudapi.Classify(err)
 		code, _ := hcloudapi.Code(err)
+		metrics.LaunchFailures.WithLabelValues(c.InstanceType.Name, c.Location, class.String()).Inc()
+		// An unrecognised code is retried as transient, which is safe and
+		// silent. Counting it is how a new terminal code becomes visible
+		// instead of being retried forever.
+		if code != "" && !hcloudapi.IsKnownCode(err) {
+			metrics.UnknownErrorCodes.WithLabelValues(code).Inc()
+		}
 
 		switch class {
 		case hcloudapi.ClassCapacity:
@@ -135,6 +150,7 @@ func (p *Provider) Create(
 			// placement_error and no_space_left_in_location are equally
 			// "not here, not now".
 			p.unavailable.Mark(c.InstanceType.Name, c.Location, code)
+			metrics.OfferingUnavailable.WithLabelValues(c.InstanceType.Name, c.Location, code).Set(1)
 			log.FromContext(ctx).V(1).Info("capacity unavailable, falling through to the next candidate",
 				"serverType", c.InstanceType.Name, "location", c.Location, "code", code)
 			continue

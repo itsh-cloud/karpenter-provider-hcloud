@@ -7,6 +7,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -20,6 +21,7 @@ import (
 	hcloudprovider "github.com/itsh-cloud/karpenter-provider-hcloud/internal/cloudprovider"
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/controllers"
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/hcloudapi"
+	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/metrics"
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/providers/bootstrap"
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/providers/catalog"
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/providers/instance"
@@ -83,6 +85,17 @@ func main() {
 
 	discovery := bootstrap.NewDiscoveryFromManager(op.Manager)
 	unavailable := instancetype.NewUnavailable()
+
+	// Suppressions expire on a timer with nothing to hook, so the gauge is
+	// rebuilt periodically rather than only written on failure. Without it a
+	// pair reads as permanently out of stock long after it recovered.
+	if err := op.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		return metrics.SyncUnavailable(ctx, unavailable)
+	})); err != nil {
+		log.FromContext(ctx).Error(err, "registering the offering availability metric sync")
+		os.Exit(1)
+	}
+
 	instanceProvider := instance.NewProvider(hcloudapi.NewServers(hcloudClient), unavailable, clusterName)
 
 	cloudProvider := hcloudprovider.New(

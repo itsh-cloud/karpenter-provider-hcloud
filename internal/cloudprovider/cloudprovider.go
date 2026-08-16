@@ -4,6 +4,7 @@ package cloudprovider
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/awslabs/operatorpkg/status"
 	corev1 "k8s.io/api/core/v1"
@@ -78,14 +79,39 @@ func (c *CloudProvider) GetSupportedNodeClasses() []status.Object {
 }
 
 // RepairPolicies returns the node conditions karpenter should treat as
-// unhealthy.
+// unhealthy enough to replace the machine.
 //
-// Deliberately empty for now. Node repair force-terminates nodes on a timer,
-// and enabling it before the provisioning path has run in production would let
-// a misdiagnosis delete healthy machines. Phase 7 turns it on with explicit
-// tolerations.
+// Declared, but INERT unless the NodeRepair feature gate is enabled: core only
+// registers the health controller when both this is non-empty and the gate is
+// on, and the gate is off by default. Declaring them now means enabling repair
+// later is one flag rather than a code change, and it puts the durations
+// somewhere reviewable instead of in an operator's head.
+//
+// The durations are deliberately long. Node repair FORCE-terminates: it does
+// not respect a PodDisruptionBudget, because the premise is that the node is
+// already unusable. That makes a false positive expensive, and the common
+// causes of a node briefly reporting NotReady, a kubelet restart, a control
+// plane rollout, a network blip, all resolve well inside thirty minutes. Being
+// slow to repair a genuinely dead node costs one node's capacity; being quick
+// to repair a live one costs its workloads their disruption budget.
 func (c *CloudProvider) RepairPolicies() []cloudprovider.RepairPolicy {
-	return nil
+	return []cloudprovider.RepairPolicy{
+		{
+			// The kubelet has stopped reporting. Thirty minutes is well past
+			// the five-minute mark at which the node controller has already
+			// tainted and evicted, so anything still here is not coming back.
+			ConditionType:      corev1.NodeReady,
+			ConditionStatus:    corev1.ConditionFalse,
+			TolerationDuration: 30 * time.Minute,
+		},
+		{
+			// Unknown means the kubelet is not talking to the API server at
+			// all, which is the shape a dead machine takes.
+			ConditionType:      corev1.NodeReady,
+			ConditionStatus:    corev1.ConditionUnknown,
+			TolerationDuration: 30 * time.Minute,
+		},
+	}
 }
 
 // Create launches a server for the NodeClaim and returns it hydrated with the
@@ -219,6 +245,15 @@ func (c *CloudProvider) resolveNodeClass(ctx context.Context, nodeClaim *karpv1.
 	return nodeClass, nil
 }
 
+// nodeClassKey is where a NodeClaim's NodeClass lives. Cluster-scoped, so the
+// namespace is always empty.
+func nodeClassKey(nodeClaim *karpv1.NodeClaim) types.NamespacedName {
+	if nodeClaim.Spec.NodeClassRef == nil {
+		return types.NamespacedName{}
+	}
+	return types.NamespacedName{Name: nodeClaim.Spec.NodeClassRef.Name}
+}
+
 func (c *CloudProvider) nodeClassForNodePool(ctx context.Context, nodePool *karpv1.NodePool) (*v1alpha1.HCloudNodeClass, error) {
 	if nodePool == nil || nodePool.Spec.Template.Spec.NodeClassRef == nil {
 		return nil, fmt.Errorf("nodepool has no nodeClassRef")
@@ -330,34 +365,4 @@ func (c *CloudProvider) capacityFor(serverType string) corev1.ResourceList {
 		)
 	}
 	return nil
-}
-
-// IsDrifted reports whether a NodeClaim no longer matches what would be
-// provisioned for it today.
-//
-// Deliberately inert in this phase, and that is a safety decision rather than
-// an omission. Drift is the CloudProvider method most able to do damage by
-// being wrong: a false positive replaces the fleet. The machinery it needs is
-// already in place, the hash controller keeps
-// karpenter.itsh.dev/hcloudnodeclass-hash on both the class and its NodeClaims,
-// but turning it on belongs with the drift tests and the metrics that make a
-// mistaken replacement visible while it is happening.
-//
-// # This does NOT mean nothing deletes nodes
-//
-// Read alone, "drift is off" invites the conclusion that this deployment
-// cannot replace a node. It can. Registering karpenter core's controllers
-// turns on, unconditionally:
-//
-//   - consolidation, whose NodePool defaults are WhenEmptyOrUnderutilized with
-//     consolidateAfter 0s, so an empty or underutilised node is deleted and
-//     replaced as soon as it qualifies;
-//   - expiration, default expireAfter 720h;
-//   - termination, which drains and evicts.
-//
-// Only drift and node repair are off. A NodePool that should not disrupt
-// anything yet has to say so itself, with spec.disruption.budgets [{nodes:
-// "0"}], which is how the first one here ships.
-func (c *CloudProvider) IsDrifted(_ context.Context, _ *karpv1.NodeClaim) (cloudprovider.DriftReason, error) {
-	return "", nil
 }

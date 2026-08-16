@@ -157,3 +157,22 @@ func (in *HCloudNodeClassSpec) PublicIPv6Enabled() bool {
 	}
 	return *in.PublicIPv6
 }
+
+// ImageDriftPolicyOrDefault returns the image drift policy, defaulting to
+// Ignore.
+//
+// A Go accessor rather than CRD defaulting, for the same reason as the others
+// here: CRD defaults only apply to fields inside a struct that is PRESENT in
+// the submitted object, so a NodeClass that omits the field entirely never gets
+// one written back.
+//
+// Ignore is the right default and the safe one. Hetzner rebuilds its named
+// images every few weeks, so a name maps to a new id on Hetzner's schedule.
+// Defaulting to Replace would roll the entire fleet whenever they did that,
+// which is an outage the operator neither asked for nor could predict.
+func (in *HCloudNodeClassSpec) ImageDriftPolicyOrDefault() ImageDriftPolicy {
+	if in == nil || in.ImageDriftPolicy == "" {
+		return ImageDriftPolicyIgnore
+	}
+	return in.ImageDriftPolicy
+}

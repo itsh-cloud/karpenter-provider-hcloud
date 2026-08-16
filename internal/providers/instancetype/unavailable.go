@@ -140,3 +140,32 @@ func (u *Unavailable) Len() int {
 	}
 	return len(u.items)
 }
+
+// Suppression is one currently suppressed pair.
+type Suppression struct {
+	ServerType string
+	Location   string
+	Code       string
+}
+
+// Snapshot returns the pairs suppressed right now, reaping expired entries as
+// it goes.
+//
+// Exists so a metric can be SYNCED rather than only incremented. A gauge that
+// is set on failure and never cleared reads as a permanent stockout long after
+// stock returned, which is precisely the wrong thing to show an operator
+// deciding whether capacity has recovered.
+func (u *Unavailable) Snapshot() []Suppression {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	now := u.now()
+	out := make([]Suppression, 0, len(u.items))
+	for k, e := range u.items {
+		if !now.Before(e.until) {
+			delete(u.items, k)
+			continue
+		}
+		out = append(out, Suppression{ServerType: k.serverType, Location: k.location, Code: e.code})
+	}
+	return out
+}

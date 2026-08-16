@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/hcloudapi"
+	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/metrics"
 )
 
 const (
@@ -132,6 +133,7 @@ func (p *Provider) Refresh(ctx context.Context) error {
 	serverTypes, err := p.client.ServerTypes(ctx)
 	if err != nil {
 		p.stale.Store(true)
+		metrics.CatalogStale.Set(1)
 		return fmt.Errorf("refreshing server types: %w", err)
 	}
 
@@ -149,6 +151,17 @@ func (p *Provider) Refresh(ctx context.Context) error {
 		FetchedAt:          p.now(),
 	})
 	p.stale.Store(false)
+	metrics.CatalogStale.Set(0)
+	metrics.CatalogLastSuccess.Set(float64(p.now().Unix()))
+	// Hetzner's PUBLISHED availability, exported and used for nothing. Graphed
+	// beside offering_unavailable it shows where what Hetzner says and what
+	// Hetzner does disagree, which is the only honest use for a flag that is
+	// neither sufficient nor necessary.
+	for _, st := range serverTypes {
+		for _, l := range st.Locations {
+			metrics.OfferingAvailabilityFlag.WithLabelValues(st.Name, l.Location).Set(boolToFloat(l.Available))
+		}
+	}
 
 	select {
 	case p.refreshed <- struct{}{}:
@@ -217,4 +230,11 @@ func (p *Provider) nextInterval() time.Duration {
 	p.randMu.Lock()
 	defer p.randMu.Unlock()
 	return p.interval + time.Duration(p.rand.Int63n(int64(p.jitter)))
+}
+
+func boolToFloat(b bool) float64 {
+	if b {
+		return 1
+	}
+	return 0
 }

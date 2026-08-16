@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/karpenter/pkg/operator/injection"
 
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/hcloudapi"
+	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/metrics"
 )
 
 // ControllerName is how this controller identifies itself in logs and metrics.
@@ -151,6 +152,7 @@ func (c *Controller) Reconcile(ctx context.Context) (reconciler.Result, error) {
 		log.FromContext(ctx).Info("deleting an orphaned server: it carries this cluster's label but its NodeClaim is gone",
 			"server", srv.Name, "id", srv.ID, "nodeclaim", claim, "age", c.clock.Since(srv.Created).Truncate(time.Second).String())
 
+		metrics.OrphansReaped.Inc()
 		if err := c.provider.Delete(ctx, srv.ProviderID()); err != nil {
 			if hcloudapi.IsNotFound(err) {
 				continue

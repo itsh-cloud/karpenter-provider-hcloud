@@ -42,6 +42,19 @@ type Server struct {
 
 	PrivateIPv4 string
 	PublicIPv4  string
+
+	// The fields below exist so drift can compare a running server against what
+	// its NodeClass says today. hcloud returns all of them on a GET, which is
+	// what makes them comparable at all; user_data and ssh_keys are NOT
+	// returned, which is exactly why those two are covered by the spec hash
+	// instead.
+	NetworkIDs       []int64
+	FirewallIDs      []int64
+	PlacementGroupID int64
+	// HasPublicIPv4 and HasPublicIPv6 report what the server actually has, not
+	// what was asked for.
+	HasPublicIPv4 bool
+	HasPublicIPv6 bool
 }
 
 // ProviderID is the value Kubernetes carries on Node.spec.providerID.
@@ -285,13 +298,23 @@ func serverFromHcloud(srv *hcloud.Server) *Server {
 	if srv.PublicNet.IPv4.IP != nil {
 		out.PublicIPv4 = srv.PublicNet.IPv4.IP.String()
 	}
+	out.HasPublicIPv4 = srv.PublicNet.IPv4.ID != 0
+	out.HasPublicIPv6 = srv.PublicNet.IPv6.ID != 0
+	if srv.PlacementGroup != nil {
+		out.PlacementGroupID = srv.PlacementGroup.ID
+	}
+	for _, fw := range srv.PublicNet.Firewalls {
+		out.FirewallIDs = append(out.FirewallIDs, fw.Firewall.ID)
+	}
 	// The first private network address. Nodes join over the private network,
 	// so this is the address that matters, and a server with none is one that
 	// cannot reach the API server.
 	for _, n := range srv.PrivateNet {
-		if n.IP != nil {
+		if n.IP != nil && out.PrivateIPv4 == "" {
 			out.PrivateIPv4 = n.IP.String()
-			break
+		}
+		if n.Network != nil {
+			out.NetworkIDs = append(out.NetworkIDs, n.Network.ID)
 		}
 	}
 	return out
