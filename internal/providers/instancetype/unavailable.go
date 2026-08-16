@@ -8,7 +8,7 @@ import (
 )
 
 // DefaultUnavailableTTL is how long an observed capacity failure suppresses a
-// (server type, datacenter) pair.
+// (server type, location) pair.
 //
 // Longer than the three minutes some providers use, because Hetzner stockouts
 // last days rather than seconds, so a short TTL just spends one failed create
@@ -17,14 +17,14 @@ import (
 // stock returns: that is the whole point of the project.
 const DefaultUnavailableTTL = 5 * time.Minute
 
-// Unavailable records (server type, datacenter) pairs that recently failed to
+// Unavailable records (server type, location) pairs that recently failed to
 // provision, so the next scheduling pass skips them instead of re-attempting
 // the same doomed combination.
 //
 // # Why this is the primary availability signal
 //
-// Hetzner publishes an availability flag per (server type, datacenter), in
-// Datacenter.ServerTypes.Available and ServerType.Locations[].Available. It is
+// Hetzner publishes an availability flag per (server type, location), in
+// Location.ServerTypes.Available and ServerType.Locations[].Available. It is
 // tempting to gate provisioning on it. Do not. Measured against the live API,
 // that flag is neither sufficient nor necessary:
 //
@@ -33,7 +33,7 @@ const DefaultUnavailableTTL = 5 * time.Minute
 //     for a type that the API continued to list as available.
 //
 //   - Not necessary. On 2026-08-16, cx43 and cx53 were both reported
-//     available:false for nbg1, in the datacenters listing and in the create
+//     available:false for nbg1, in the locations listing and in the create
 //     response's own embedded server_type.locations. Ordering them in nbg1
 //     succeeded anyway: HTTP 201, create_server action reaching success, a
 //     running server. Reproduced three times across the two types.
@@ -57,7 +57,7 @@ type Unavailable struct {
 
 type key struct {
 	serverType string
-	datacenter string
+	location   string
 }
 
 type entry struct {
@@ -79,48 +79,48 @@ func NewUnavailableWithOptions(ttl time.Duration, now func() time.Time) *Unavail
 	return &Unavailable{ttl: ttl, now: now, items: map[key]entry{}}
 }
 
-// Mark suppresses one (server type, datacenter) pair for the TTL.
+// Mark suppresses one (server type, location) pair for the TTL.
 //
 // Call this only for genuine capacity failures. In particular never call it
 // for a rate-limit error: that is caused by our own request volume, and
 // suppressing offerings because of it converts a slowdown into a
 // self-inflicted capacity outage.
-func (u *Unavailable) Mark(serverType, datacenter, code string) {
+func (u *Unavailable) Mark(serverType, location, code string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	u.items[key{serverType, datacenter}] = entry{until: u.now().Add(u.ttl), code: code}
+	u.items[key{serverType, location}] = entry{until: u.now().Add(u.ttl), code: code}
 }
 
-// MarkDatacenter suppresses every recorded type in a datacenter, and is the
-// right response to a datacenter-wide signal such as maintenance.
+// MarkLocation suppresses every recorded type in a location, and is the
+// right response to a location-wide signal such as maintenance.
 //
 // It can only suppress pairs already known to this cache, so callers with the
 // full catalog should iterate it and call Mark per type instead.
-func (u *Unavailable) MarkDatacenter(datacenter, code string) {
+func (u *Unavailable) MarkLocation(location, code string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	until := u.now().Add(u.ttl)
 	for k := range u.items {
-		if k.datacenter == datacenter {
+		if k.location == location {
 			u.items[k] = entry{until: until, code: code}
 		}
 	}
 }
 
 // Has reports whether the pair is currently suppressed.
-func (u *Unavailable) Has(serverType, datacenter string) bool {
+func (u *Unavailable) Has(serverType, location string) bool {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
-	e, ok := u.items[key{serverType, datacenter}]
+	e, ok := u.items[key{serverType, location}]
 	return ok && u.now().Before(e.until)
 }
 
 // Code returns the error code that caused the current suppression, for
 // metrics and events.
-func (u *Unavailable) Code(serverType, datacenter string) (string, bool) {
+func (u *Unavailable) Code(serverType, location string) (string, bool) {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
-	e, ok := u.items[key{serverType, datacenter}]
+	e, ok := u.items[key{serverType, location}]
 	if !ok || !u.now().Before(e.until) {
 		return "", false
 	}
