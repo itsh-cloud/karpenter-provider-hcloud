@@ -11,8 +11,8 @@ type: application
 # CloudProvider Create/Delete is not, so this build reconciles and reports
 # NodeClasses and cannot yet provision a node. Tagging that 0.1.0 would promise
 # an autoscaler that does not autoscale.
-version: 0.1.0-alpha.1
-appVersion: "0.1.0-alpha.1"
+version: 0.1.0-alpha.2
+appVersion: "0.1.0-alpha.2"
 
 home: https://github.com/itsh-cloud/karpenter-provider-hcloud
 sources:
