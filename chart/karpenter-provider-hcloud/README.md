@@ -17,7 +17,7 @@ The token needs **read-write** on the project's servers.
 
 ```bash
 helm install karpenter-provider-hcloud oci://ghcr.io/itsh-cloud/charts/karpenter-provider-hcloud \
-  --version 0.1.0-alpha.3 --namespace karpenter
+  --version 0.1.0-alpha.4 --namespace karpenter
 ```
 
 Installing with no NodePool is inert: the controller resolves and reports every
@@ -34,7 +34,8 @@ NodeClaims reference it.
 garbage collector for servers whose NodeClaim has gone away. A NodePool
 referencing a ready NodeClass will provision nodes.
 
-Drift detection and node repair are deliberately still off. Everything else
+Drift detection is implemented and ON. Node repair is implemented but inert
+unless the `NodeRepair` feature gate is enabled. Everything else
 karpenter core ships is ON, including consolidation (whose NodePool defaults
 are `WhenEmptyOrUnderutilized` with `consolidateAfter: 0s`), expiration, and
 drain-and-evict termination. A NodePool that should not disrupt anything yet
