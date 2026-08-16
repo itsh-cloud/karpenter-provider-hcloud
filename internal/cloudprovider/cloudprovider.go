@@ -314,10 +314,14 @@ func (c *CloudProvider) toNodeClaim(srv *hcloudapi.Server, it *cloudprovider.Ins
 	out.Labels[corev1.LabelTopologyRegion] = srv.Location
 	out.Labels[v1alpha1.LabelCSILocation] = srv.Location
 	out.Labels[karpv1.CapacityTypeLabelKey] = karpv1.CapacityTypeOnDemand
-	// topology.kubernetes.io/zone is deliberately NOT set. hcloud-CCM writes it
-	// from the datacenter the server actually landed in, and guessing here
-	// would produce a label that disagrees with the node and marks it
-	// permanently drifted.
+	// Set, and it agrees with the node by construction rather than by luck.
+	//
+	// hcloud-CCM derives this label from the LOCATION with a pure function and
+	// never reads the server's real datacenter, so the same input yields the
+	// same answer on both sides. Carrying it here means an in-flight NodeClaim
+	// can be priced and can satisfy a zone-constrained pod before its Node
+	// exists, instead of waiting for the CCM to catch up.
+	out.Labels[corev1.LabelTopologyZone] = instancetype.LegacyDatacenterForLocation(srv.Location)
 
 	out.Status.ProviderID = srv.ProviderID()
 	out.CreationTimestamp = metav1.Time{Time: srv.Created}

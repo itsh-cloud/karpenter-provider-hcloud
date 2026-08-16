@@ -89,26 +89,63 @@ func TestEveryOfferingCarriesCSILocation(t *testing.T) {
 //
 // hcloud-CCM writes region=location and zone=datacenter. We can constrain the
 // former and must not constrain the latter.
-func TestRegionIsLocationAndZoneIsFree(t *testing.T) {
-	sts := testCatalog()
-	its := Build(sts, testNodeClass("nbg1"), 0, NewUnavailable(), Options{})
+// TestOfferingsCarryTheZoneKarpenterWillPriceAgainst.
+//
+// Karpenter prices a running node with OfferingPrice(node zone label, capacity
+// type). If no offering carries that zone the lookup fails, the candidate
+// prices at 0, and consolidation filters replacements to those cheaper than 0,
+// i.e. none. Core then reports "Can't replace with a cheaper node" forever,
+// which silently removes replacement consolidation, the one thing
+// cluster-autoscaler could not do and the reason this project exists.
+//
+// Leaving zone unconstrained does not avoid that: Requirements.Get on a missing
+// key returns an Exists requirement whose Any() is a RANDOM number, so the
+// lookup can never match. This asserts the end-to-end property, the price
+// lookup succeeding, rather than the mere presence of a label.
+func TestOfferingsCarryTheZoneKarpenterWillPriceAgainst(t *testing.T) {
+	its := Build(testCatalog(), testNodeClass("nbg1"), 0, NewUnavailable(), Options{})
+	if len(its) == 0 {
+		t.Fatal("no instance types built")
+	}
 
 	for _, it := range its {
 		for _, o := range it.Offerings {
 			if got := o.Requirements.Get(corev1.LabelTopologyRegion).Any(); got != "nbg1" {
 				t.Errorf("%s region = %q, want the location nbg1", it.Name, got)
 			}
-			// Zone must be left UNCONSTRAINED. Hetzner's datacenter API is
-			// deprecated and stops being returned after 2026-10-01, servers are
-			// ordered by location, and Hetzner picks the datacenter. Pinning a
-			// zone we cannot predict would mismatch the node that appears.
-			//
-			// Note Get() on an undefined key returns an unbounded Exists
-			// requirement rather than an empty one, so Has() is the right check.
-			if o.Requirements.Has(corev1.LabelTopologyZone) {
-				t.Errorf("%s pins zone to %v; it must stay free",
-					it.Name, o.Requirements.Get(corev1.LabelTopologyZone).Values())
-			}
+		}
+
+		// The label hcloud-CCM will actually write on a node in nbg1.
+		price, ok := it.OfferingPrice("nbg1-dc3", karpv1.CapacityTypeOnDemand)
+		if !ok {
+			t.Errorf("%s: OfferingPrice(nbg1-dc3) found nothing; consolidation would price this node at 0 "+
+				"and never replace it", it.Name)
+			continue
+		}
+		if price <= 0 {
+			t.Errorf("%s: OfferingPrice(nbg1-dc3) = %v, want a positive hourly price", it.Name, price)
+		}
+	}
+}
+
+// TestZoneMatchesTheCCMMapping pins the values themselves against
+// hcloud-cloud-controller-manager's internal/legacydatacenter.NameFromLocation,
+// which is the function that actually writes the label. A divergence here is
+// invisible: nodes simply stop being consolidatable.
+func TestZoneMatchesTheCCMMapping(t *testing.T) {
+	for location, want := range map[string]string{
+		"nbg1": "nbg1-dc3",
+		"hel1": "hel1-dc2",
+		"fsn1": "fsn1-dc14",
+		"ash":  "ash-dc1",
+		"hil":  "hil-dc1",
+		"sin":  "sin-dc1",
+		// The CCM's own default: a location it does not know maps to itself,
+		// which is what it promises for locations added later.
+		"xyz1": "xyz1",
+	} {
+		if got := LegacyDatacenterForLocation(location); got != want {
+			t.Errorf("LegacyDatacenterForLocation(%q) = %q, want %q to match what the CCM writes", location, got, want)
 		}
 	}
 }

@@ -375,3 +375,31 @@ func TestHashIsStampedOnLaunch(t *testing.T) {
 		t.Errorf("hash annotation = %q, want the NodeClass's %q", got, nc.Hash())
 	}
 }
+
+// TestLaunchedNodeClaimCarriesTheZoneTheCCMWillWrite.
+//
+// The two must agree or karpenter prices the node at 0 and never replaces it.
+// They agree by construction, not by luck: the CCM derives the label from the
+// location with a pure function and never reads the server's real datacenter,
+// so this asserts the shared answer rather than a guess.
+func TestLaunchedNodeClaimCarriesTheZoneTheCCMWillWrite(t *testing.T) {
+	nc := readyNodeClass()
+	cp, _ := newTestProvider(t, nc)
+
+	claim := &karpv1.NodeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "n1"},
+		Spec: karpv1.NodeClaimSpec{
+			NodeClassRef: &karpv1.NodeClassReference{Group: v1alpha1.Group, Kind: "HCloudNodeClass", Name: "default"},
+		},
+	}
+	out, err := cp.Create(context.Background(), claim)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if got := out.Labels[corev1.LabelTopologyZone]; got != "nbg1-dc3" {
+		t.Errorf("zone label = %q, want nbg1-dc3, which is what hcloud-CCM writes for a server in nbg1", got)
+	}
+	if got := out.Labels[corev1.LabelTopologyRegion]; got != "nbg1" {
+		t.Errorf("region label = %q, want nbg1", got)
+	}
+}

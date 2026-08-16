@@ -125,17 +125,24 @@ func newInstanceType(
 		offerings = append(offerings, &cloudprovider.Offering{
 			Requirements: scheduling.NewRequirements(
 				scheduling.NewRequirement(karpv1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, karpv1.CapacityTypeOnDemand),
-				// Region only; zone is deliberately left free.
-				//
-				// hcloud-CCM writes region=location (nbg1) and
-				// zone=datacenter (nbg1-dc3), but Hetzner's datacenter API is
-				// deprecated and stops being returned after 2026-10-01, so
-				// datacenters can no longer be enumerated. Servers are ordered
-				// by location and Hetzner chooses the datacenter, so pinning a
-				// zone we cannot predict would mismatch the node that appears.
-				// Leaving it unconstrained lets any datacenter in the location
-				// satisfy the claim, which is what we actually mean.
 				scheduling.NewRequirement(corev1.LabelTopologyRegion, corev1.NodeSelectorOpIn, l.Location),
+				// Zone, and it must be here.
+				//
+				// Karpenter prices a running node by looking up an offering
+				// whose zone equals the node's topology.kubernetes.io/zone
+				// label. With no zone requirement, Offering.Zone() reads a
+				// missing key, which yields a RANDOM number, so the lookup
+				// never matches, every candidate prices at 0, and consolidation
+				// can never find anything cheaper. That silently removes
+				// replacement consolidation, which is the capability this
+				// project exists to gain.
+				//
+				// The value is not a guess: hcloud-CCM derives the label from
+				// the location with a pure function and never reads the
+				// server's real datacenter, so ours agrees with the node's by
+				// construction. See LegacyDatacenterForLocation.
+				scheduling.NewRequirement(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn,
+					LegacyDatacenterForLocation(l.Location)),
 				// Load-bearing. Karpenter core injects a bound PV's nodeAffinity
 				// keys as NodeClaim requirements, and Compatible() DENIES a
 				// custom label a NodePool leaves undefined. Without this on the
