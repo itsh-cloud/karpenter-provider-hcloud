@@ -1,0 +1,114 @@
+# Acceptance test 7a: capacity fall-through, deliberately location-independent.
+#
+# This is the founding incident of the project, reproduced on purpose. The
+# cluster ended up on eight mixed workers because cluster-autoscaler could only
+# DELETE an underutilised node, never REPLACE a correctly-utilised but
+# wrongly-typed one. When cx33 went out of stock in nbg1, CA fell through to a
+# cpx32 at roughly four times the price and then had no mechanism to come back
+# once cx33 returned.
+#
+# What this exercises, end to end, without depending on stock anywhere:
+#
+#   1. cx33 is preferred on price (EUR 8.49 against cpx32's EUR 35.49), so a
+#      healthy nbg1 provisions cx33 and nothing interesting happens.
+#   2. Whenever cx33 IS out of stock in nbg1, the create fails with a
+#      capacity-class code, the provider classifies it, marks that
+#      (type, location) pair unavailable, and falls through to cpx32. The pod
+#      gets a node either way, which CA also managed.
+#   3. The part CA could not do: once cx33 returns and the suppression expires,
+#      consolidation simulates replacing the cpx32, finds the replacement
+#      cheaper and the pods reschedulable, and executes a REPLACE.
+#
+# Step 3 is the whole justification for the project, and it needs nothing from
+# the provider beyond an honest Price and Available.
+#
+# Safe to leave running: the limits cap it at one node, the taint keeps real
+# workloads off, and no teardown is required. Delete the NodePool when done.
+---
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: acceptance-7a
+  labels:
+    itsh.dev/acceptance: "7a"
+spec:
+  # One node's worth. cx33 is 4 cpu, cpx32 is 4 cpu, so this admits exactly one
+  # of either and cannot run away if something misbehaves.
+  limits:
+    cpu: "4"
+  disruption:
+    # WhenEmptyOrUnderutilized, because step 3 IS consolidation. Restricting to
+    # WhenEmpty would remove the very behaviour under test.
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    # Short, so the replace happens while somebody is watching rather than
+    # fifteen minutes after they gave up.
+    consolidateAfter: 2m
+  template:
+    metadata:
+      labels:
+        itsh.dev/acceptance: "7a"
+    spec:
+      nodeClassRef:
+        group: karpenter.itsh.dev
+        kind: HCloudNodeClass
+        name: default
+      # Tainted, so nothing real can land here and the test cannot take
+      # production workloads down with it when it consolidates.
+      taints:
+        - key: itsh.dev/acceptance
+          value: "7a"
+          effect: NoSchedule
+      requirements:
+        # Exactly the two types from the founding incident, and nothing else.
+        # Price ranks them cx33 then cpx32, which is also the order the
+        # expander's table wanted, so a correct provider takes cx33 whenever it
+        # can get one.
+        - key: node.kubernetes.io/instance-type
+          operator: In
+          values: [cx33, cpx32]
+        # nbg1 ONLY. Constraining the location is what makes this runnable at
+        # any time: it tests the fall-through BETWEEN TYPES rather than between
+        # locations, so it never depends on stock in a particular datacenter.
+        - key: topology.kubernetes.io/region
+          operator: In
+          values: [nbg1]
+      # No expireAfter. Worker recycling runs through drift, and an expiry here
+      # would replace the node on a timer and confuse the reading.
+      expireAfter: Never
+---
+# One pod, sized so exactly one node is needed.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: acceptance-7a
+  namespace: default
+  labels:
+    itsh.dev/acceptance: "7a"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: acceptance-7a
+  template:
+    metadata:
+      labels:
+        app: acceptance-7a
+    spec:
+      nodeSelector:
+        itsh.dev/acceptance: "7a"
+      tolerations:
+        - key: itsh.dev/acceptance
+          operator: Equal
+          value: "7a"
+          effect: NoSchedule
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.10
+          resources:
+            requests:
+              # Big enough that the node is not "empty" and therefore has to be
+              # REPLACED rather than simply deleted, which is the distinction
+              # between what karpenter can do and what CA could.
+              cpu: "1"
+              memory: 512Mi
+      terminationGracePeriodSeconds: 0

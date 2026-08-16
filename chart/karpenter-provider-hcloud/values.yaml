@@ -144,8 +144,23 @@ service:
   annotations: {}
 
 serviceMonitor:
+  # Off by default because it needs the Prometheus Operator CRDs. Turn it on
+  # once you have checked the label below.
   enabled: false
-  additionalLabels: {}
+
+  # These labels are how Prometheus FINDS the ServiceMonitor, not decoration.
+  #
+  # A kube-prometheus-stack Prometheus discovers monitors through
+  # spec.serviceMonitorSelector, which defaults to matching the release name of
+  # the stack. If these labels do not satisfy that selector the ServiceMonitor
+  # is created, looks correct, and is scraped by nothing, which is a silence
+  # that reads exactly like the provider having no metrics.
+  #
+  # Check yours before enabling:
+  #   kubectl get prometheus -A -o jsonpath='{.items[*].spec.serviceMonitorSelector}'
+  additionalLabels:
+    release: kube-prometheus
+
   interval: 30s
 
 # CRDs are rendered as ordinary templates so that `helm upgrade` applies schema
