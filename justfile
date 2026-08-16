@@ -65,7 +65,7 @@ generate-docker:
 # Render config/crd into the chart templates, adding the resource-policy that
 # stops `helm uninstall` taking every HCloudNodeClass with it.
 _stamp-chart-crds:
-    python3 hack/stamp-chart-crds.py
+    python3 tools/stamp-chart-crds.py
 
 _vendor-karpenter-crds:
     #!/usr/bin/env bash

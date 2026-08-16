@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 """Render config/crd into the Helm chart's templates.
 
-A plain `cp` cannot carry the two things the chart needs:
+A plain `cp` cannot carry the three things the chart needs:
 
   * an install-time toggle, so a GitOps setup that applies CRDs separately can
     turn them off;
   * helm.sh/resource-policy: keep, so `helm uninstall` leaves the CRDs, and
     therefore every HCloudNodeClass, in place. Without it, removing the release
     deletes the record of how every running node was built.
+  * argocd.argoproj.io/sync-options: Prune=false,Delete=false, which is the
+    same protection against the controller most people deploy this with.
+    Deleting the NodePool or NodeClaim CRD cascades to every CR of that kind,
+    and deleting a NodePool CR drains and deletes every node it owns, so an
+    ordinary prune takes out the whole fleet. Whether Argo honours
+    helm.sh/resource-policy as an implicit prune block is not documented, so
+    this is stated rather than assumed.
 
 Idempotent: the destination is rebuilt from config/crd each run.
 """
@@ -17,7 +24,10 @@ import sys
 
 GUARD_OPEN = "{{- if .Values.crds.enabled }}"
 GUARD_CLOSE = "{{- end }}"
-KEEP = "    helm.sh/resource-policy: keep\n"
+KEEP = (
+    "    helm.sh/resource-policy: keep\n"
+    "    argocd.argoproj.io/sync-options: Prune=false,Delete=false\n"
+)
 ANNOTATIONS = "  annotations:\n"
 
 
