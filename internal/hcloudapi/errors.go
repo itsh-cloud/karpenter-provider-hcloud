@@ -113,6 +113,15 @@ var classes = map[string]Class{
 	string(hcloud.ErrorCodeTokenReadonly): ClassFatal,
 }
 
+// CodeUniqueness is the code Hetzner returns for a server name already in use.
+//
+// Exported because the create path singles it out: on a create it means a
+// previous attempt's response was lost while the server was made, which is
+// recoverable by adoption, unlike the rest of ClassConfig. Sourced from
+// hcloud-go here so the literal is spelled once, in the only package that
+// imports it.
+const CodeUniqueness = string(hcloud.ErrorCodeUniquenessError)
+
 // Code extracts the Hetzner error code from err, following wrapping.
 //
 // It deliberately does not use hcloud.IsError, which only ever matches

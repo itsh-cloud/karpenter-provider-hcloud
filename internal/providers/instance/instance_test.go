@@ -558,6 +558,12 @@ func TestProviderIDRoundTrip(t *testing.T) {
 	}{
 		{"hcloud://115379842", 115379842, false},
 		{"hcloud://0", 0, true},
+		// Trailing rubbish must be REJECTED, not truncated. A scan-based parse
+		// accepts this and yields 115379842, which then selects a real server
+		// that a delete would act on.
+		{"hcloud://115379842abc", 0, true},
+		{"hcloud://115379842 ", 0, true},
+		{"hcloud://-5", 0, true},
 		{"aws:///us-east-1a/i-abc", 0, true},
 		{"hcloud://", 0, true},
 		{"115379842", 0, true},

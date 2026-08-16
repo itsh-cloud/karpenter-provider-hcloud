@@ -7,7 +7,6 @@ import (
 
 	"github.com/awslabs/operatorpkg/status"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -144,7 +143,7 @@ func (c *CloudProvider) Get(ctx context.Context, providerID string) (*karpv1.Nod
 	if srv == nil {
 		return nil, cloudprovider.NewNodeClaimNotFoundError(fmt.Errorf("server %q not found", providerID))
 	}
-	return c.toNodeClaimFromServer(ctx, srv), nil
+	return c.toNodeClaimFromServer(srv), nil
 }
 
 // List returns a NodeClaim for every server this cluster's provider owns.
@@ -159,7 +158,7 @@ func (c *CloudProvider) List(ctx context.Context) ([]*karpv1.NodeClaim, error) {
 	}
 	out := make([]*karpv1.NodeClaim, 0, len(servers))
 	for _, srv := range servers {
-		out = append(out, c.toNodeClaimFromServer(ctx, srv))
+		out = append(out, c.toNodeClaimFromServer(srv))
 	}
 	return out, nil
 }
@@ -230,35 +229,32 @@ func (c *CloudProvider) nodeClassForNodePool(ctx context.Context, nodePool *karp
 // could have held it.
 func (c *CloudProvider) toNodeClaim(srv *hcloudapi.Server, it *cloudprovider.InstanceType, in *karpv1.NodeClaim) *karpv1.NodeClaim {
 	out := in.DeepCopy()
-	labels := map[string]string{}
+	if out.Labels == nil {
+		out.Labels = map[string]string{}
+	}
 
 	// Every requirement the instance type pins to a single value becomes a
 	// label, which is how core's binpacking learns what it just got.
 	if it != nil {
 		for key, req := range it.Requirements {
 			if req.Len() == 1 {
-				labels[key] = req.Values()[0]
+				out.Labels[key] = req.Values()[0]
 			}
 		}
 		out.Status.Capacity = it.Capacity
 		out.Status.Allocatable = it.Allocatable()
 	}
 
-	labels[corev1.LabelInstanceTypeStable] = srv.ServerType
-	labels[corev1.LabelTopologyRegion] = srv.Location
-	labels[v1alpha1.LabelCSILocation] = srv.Location
-	labels[karpv1.CapacityTypeLabelKey] = karpv1.CapacityTypeOnDemand
+	// Written after the requirements, so what the server actually is wins over
+	// what the instance type asked for.
+	out.Labels[corev1.LabelInstanceTypeStable] = srv.ServerType
+	out.Labels[corev1.LabelTopologyRegion] = srv.Location
+	out.Labels[v1alpha1.LabelCSILocation] = srv.Location
+	out.Labels[karpv1.CapacityTypeLabelKey] = karpv1.CapacityTypeOnDemand
 	// topology.kubernetes.io/zone is deliberately NOT set. hcloud-CCM writes it
 	// from the datacenter the server actually landed in, and guessing here
 	// would produce a label that disagrees with the node and marks it
 	// permanently drifted.
-
-	if out.Labels == nil {
-		out.Labels = map[string]string{}
-	}
-	for k, v := range labels {
-		out.Labels[k] = v
-	}
 
 	out.Status.ProviderID = srv.ProviderID()
 	out.CreationTimestamp = metav1.Time{Time: srv.Created}
@@ -270,7 +266,7 @@ func (c *CloudProvider) toNodeClaim(srv *hcloudapi.Server, it *cloudprovider.Ins
 //
 // Capacity is looked up from the catalog rather than left empty: core's
 // garbage collector and its cost accounting both read it.
-func (c *CloudProvider) toNodeClaimFromServer(ctx context.Context, srv *hcloudapi.Server) *karpv1.NodeClaim {
+func (c *CloudProvider) toNodeClaimFromServer(srv *hcloudapi.Server) *karpv1.NodeClaim {
 	nc := &karpv1.NodeClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              srv.Name,
@@ -290,12 +286,24 @@ func (c *CloudProvider) toNodeClaimFromServer(ctx context.Context, srv *hcloudap
 	if capacity := c.capacityFor(srv.ServerType); capacity != nil {
 		nc.Status.Capacity = capacity
 	}
-	_ = ctx
 	return nc
 }
 
 // capacityFor returns a server type's capacity from the catalog, or nil when
 // the catalog cannot answer.
+//
+// It applies the SAME VM overhead correction instancetype.Capacity does, and
+// that consistency is the point rather than a detail. Create publishes
+// Status.Capacity from the instance type, which is corrected; if this returned
+// Hetzner's advertised figures instead, the same server would report roughly
+// 7% more memory through Get and List than it did through Create, and core's
+// cost accounting and its garbage collector both read this.
+//
+// Kubelet configuration is deliberately not consulted. Get and List are given a
+// server, not a NodeClass, so there is no way to know which kubelet block built
+// it; this uses the defaults, which is exact for every NodeClass that does not
+// override them and close for the rest. The precise per-NodeClass figure lives
+// on the Node itself, which is where anything needing exactness should read it.
 func (c *CloudProvider) capacityFor(serverType string) corev1.ResourceList {
 	snapshot := c.catalog.Get()
 	if snapshot == nil {
@@ -305,10 +313,12 @@ func (c *CloudProvider) capacityFor(serverType string) corev1.ResourceList {
 		if st.Name != serverType {
 			continue
 		}
-		return corev1.ResourceList{
-			corev1.ResourceCPU:    *resource.NewQuantity(int64(st.Cores), resource.DecimalSI),
-			corev1.ResourceMemory: *resource.NewQuantity(int64(st.MemoryGiB*1024*1024*1024), resource.BinarySI),
-		}
+		return instancetype.Capacity(
+			st.Cores, st.MemoryGiB, st.DiskGB,
+			v1alpha1.DefaultMaxPods,
+			instancetype.DefaultVMMemoryOverheadPercent,
+			instancetype.DefaultVMDiskOverheadPercent,
+		)
 	}
 	return nil
 }

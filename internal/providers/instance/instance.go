@@ -27,10 +27,9 @@ import (
 const DefaultMaxCreateAttempts = 8
 
 // Candidate is one (instance type, location) pair a NodeClaim could be
-// satisfied by.
+// satisfied by, at the price that pair is offered for.
 type Candidate struct {
 	InstanceType *cloudprovider.InstanceType
-	Offering     *cloudprovider.Offering
 	Location     string
 	Price        float64
 }
@@ -137,7 +136,7 @@ func (p *Provider) Create(
 			continue
 
 		case hcloudapi.ClassConfig:
-			if code == string(hcloudUniquenessError) {
+			if code == hcloudapi.CodeUniqueness {
 				// A previous attempt's HTTP response was lost, but the server
 				// was created. Adopt it rather than failing: the alternative
 				// leaks a running, billing server that nothing owns.
@@ -173,9 +172,6 @@ func (p *Provider) Create(
 	return nil, nil, cloudprovider.NewInsufficientCapacityError(
 		fmt.Errorf("no capacity after %d attempts across %d candidates, last error: %w", attempts, len(candidates), lastErr))
 }
-
-// hcloudUniquenessError is the code Hetzner returns for a name already in use.
-const hcloudUniquenessError = "uniqueness_error"
 
 // adopt recovers the server from a create whose response never arrived.
 //
@@ -223,7 +219,7 @@ func (p *Provider) orderedCandidates(nodeClaim *karpv1.NodeClaim, instanceTypes 
 			if loc == "" {
 				continue
 			}
-			out = append(out, Candidate{InstanceType: it, Offering: o, Location: loc, Price: o.Price})
+			out = append(out, Candidate{InstanceType: it, Location: loc, Price: o.Price})
 		}
 	}
 

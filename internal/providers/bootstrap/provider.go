@@ -3,6 +3,8 @@ package bootstrap
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 
 	corev1 "k8s.io/api/core/v1"
 	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
@@ -66,13 +68,11 @@ func (p *Provider) Render(ctx context.Context, nodeClass *v1alpha1.HCloudNodeCla
 // accounting is wrong for every one of them.
 func nodeLabels(nodeClaim *karpv1.NodeClaim) map[string]string {
 	out := map[string]string{}
-	for k, v := range nodeClaim.Labels {
-		out[k] = v
-	}
-	// Not optional, and not merely informational: karpenter matches a Node back
-	// to its NodeClaim through this, and a node without it is one core cannot
-	// account for.
-	out[karpv1.NodePoolLabelKey] = nodeClaim.Labels[karpv1.NodePoolLabelKey]
+	maps.Copy(out, nodeClaim.Labels)
+	// The nodepool label is not merely informational: karpenter matches a Node
+	// back to its NodeClaim through it, and a node without it is one core cannot
+	// account for. An empty value matches nothing, so it is dropped rather than
+	// registered as a label that looks present and is not.
 	if out[karpv1.NodePoolLabelKey] == "" {
 		delete(out, karpv1.NodePoolLabelKey)
 	}
@@ -86,6 +86,5 @@ func nodeLabels(nodeClaim *karpv1.NodeClaim) map[string]string {
 // taint. Startup taints are included because a node must carry them from the
 // moment it registers, not from whenever a controller gets round to it.
 func nodeTaints(nodeClaim *karpv1.NodeClaim) []corev1.Taint {
-	taints := append([]corev1.Taint{}, nodeClaim.Spec.Taints...)
-	return append(taints, nodeClaim.Spec.StartupTaints...)
+	return slices.Concat(nodeClaim.Spec.Taints, nodeClaim.Spec.StartupTaints)
 }

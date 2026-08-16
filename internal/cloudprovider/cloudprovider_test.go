@@ -273,3 +273,69 @@ func TestNameIsStable(t *testing.T) {
 		t.Errorf("Name() = %q; it appears in karpenter's metrics and must not drift", cp.Name())
 	}
 }
+
+// TestCapacityIsConsistentBetweenCreateAndList.
+//
+// Create publishes Status.Capacity from the instance type, which has the VM
+// overhead correction applied. Get and List take a different route, so without
+// deliberate care the same server reports roughly 7% more memory through one
+// than the other, and core's cost accounting and its garbage collector both
+// read this.
+func TestCapacityIsConsistentBetweenCreateAndList(t *testing.T) {
+	cp, servers := newTestProvider(t)
+	servers.byID[1] = &hcloudapi.Server{
+		ID: 1, Name: "worker", ServerType: "cx33", Location: "nbg1",
+		Labels: map[string]string{hcloudapi.LabelManagedBy: testCluster},
+	}
+
+	claims, err := cp.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	listed := claims[0].Status.Capacity
+
+	// What Create would publish for the same type, via the instance type.
+	types, err := cp.instanceTypes(readyNodeClass())
+	if err != nil {
+		t.Fatalf("instanceTypes: %v", err)
+	}
+	var created corev1.ResourceList
+	for _, it := range types {
+		if it.Name == "cx33" {
+			created = it.Capacity
+		}
+	}
+	if created == nil {
+		t.Fatal("cx33 missing from the built instance types")
+	}
+
+	for _, r := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory, corev1.ResourceEphemeralStorage, corev1.ResourcePods} {
+		want, got := created[r], listed[r]
+		if want.Cmp(got) != 0 {
+			t.Errorf("%s: Create publishes %s, List publishes %s; the same server must report one capacity", r, want.String(), got.String())
+		}
+	}
+}
+
+// TestListReportsCorrectedMemoryNotAdvertised pins the direction, so the test
+// above cannot be satisfied by making both sides equally wrong.
+func TestListReportsCorrectedMemoryNotAdvertised(t *testing.T) {
+	cp, servers := newTestProvider(t)
+	servers.byID[1] = &hcloudapi.Server{
+		ID: 1, Name: "worker", ServerType: "cx33", Location: "nbg1",
+		Labels: map[string]string{hcloudapi.LabelManagedBy: testCluster},
+	}
+
+	claims, err := cp.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem := claims[0].Status.Capacity.Memory().Value()
+	advertised := int64(8) * 1024 * 1024 * 1024
+	if mem >= advertised {
+		t.Errorf("memory = %d, want less than the advertised %d; a machine never reports its full advertised RAM", mem, advertised)
+	}
+	if mem < advertised*90/100 {
+		t.Errorf("memory = %d, more than 10%% below advertised %d; the correction is too aggressive", mem, advertised)
+	}
+}

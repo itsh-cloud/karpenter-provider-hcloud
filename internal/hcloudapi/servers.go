@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
@@ -42,7 +44,7 @@ type Server struct {
 }
 
 // ProviderID is the value Kubernetes carries on Node.spec.providerID.
-func (s *Server) ProviderID() string { return ProviderIDPrefix + fmt.Sprint(s.ID) }
+func (s *Server) ProviderID() string { return ProviderIDPrefix + strconv.FormatInt(s.ID, 10) }
 
 // ProviderIDPrefix is the scheme hcloud-CCM uses, and must match it exactly:
 // the CCM sets this on every Node, and karpenter matches NodeClaims to Nodes by
@@ -52,11 +54,15 @@ const ProviderIDPrefix = "hcloud://"
 // ServerIDFromProviderID extracts the numeric id, or an error if the value is
 // not one of ours.
 func ServerIDFromProviderID(providerID string) (int64, error) {
-	if len(providerID) <= len(ProviderIDPrefix) || providerID[:len(ProviderIDPrefix)] != ProviderIDPrefix {
+	rest, ok := strings.CutPrefix(providerID, ProviderIDPrefix)
+	if !ok {
 		return 0, fmt.Errorf("providerID %q is not an hcloud provider id", providerID)
 	}
-	var id int64
-	if _, err := fmt.Sscanf(providerID[len(ProviderIDPrefix):], "%d", &id); err != nil || id <= 0 {
+	// ParseInt rather than a scan, so trailing rubbish is rejected instead of
+	// silently truncated: the id this yields selects the server a delete acts
+	// on.
+	id, err := strconv.ParseInt(rest, 10, 64)
+	if err != nil || id <= 0 {
 		return 0, fmt.Errorf("providerID %q has no valid server id", providerID)
 	}
 	return id, nil
@@ -104,7 +110,7 @@ type serverClient struct {
 
 // NewServers returns a Servers backed by the given hcloud client.
 func NewServers(c *hcloud.Client) Servers {
-	return &serverClient{c: c, timeout: DefaultCreateTimeout}
+	return NewServersWithTimeout(c, DefaultCreateTimeout)
 }
 
 // NewServersWithTimeout returns a Servers with an explicit create timeout.
