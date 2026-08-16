@@ -21,10 +21,13 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # Pinned, not "latest". A newer linter release could otherwise fail a
+      # build that passed locally on the same commit, with nothing in this
+      # repository having changed. Bump it deliberately.
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: v2.12.2
 
       - name: go vet
         run: go vet ./...

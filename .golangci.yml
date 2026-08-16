@@ -1,14 +1,44 @@
+# Pinned so `just lint` and CI reach the same verdict.
+#
+# CI previously tracked golangci-lint "latest", which meant a newer release
+# could fail a build that passed locally on the exact same commit, with no
+# change to this repository. A lint failure should be a statement about the
+# code.
 version: "2"
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - errorlint
+    - misspell
+    - nolintlint
+    - unconvert
+
+  # Deliberately no revive: its exported rule wants a doc comment on every
+  # exported method, which here means eight restatements of "Reconcile
+  # reconciles" on interface implementations whose type documentation already
+  # explains what they do and why. Comments in this repo carry reasoning, and a
+  # linter that rewards filler works against that.
+
+  settings:
+    nolintlint:
+      # A bare //nolint is a permanent, unexplained exemption. Requiring both
+      # the specific linter and a reason keeps every suppression reviewable.
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
+
+  exclusions:
+    rules:
+      # Table-driven tests legitimately ignore errors in fixtures, and the
+      # duplication a linter sees in test cases is usually the point.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - dupl
 
 formatters:
   enable:
     - gofmt
-
-linters:
-  enable:
-    - govet
-    - errcheck
-    - staticcheck
-    - unused
-    - ineffassign
-    - misspell
+    - goimports

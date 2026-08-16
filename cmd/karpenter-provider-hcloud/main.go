@@ -70,7 +70,14 @@ func main() {
 		op.EventRecorder,
 		// operatorpkg's generic status controller wants the raw client-go
 		// recorder, which karpenter's deduplicating one does not implement.
-		op.GetEventRecorderFor("karpenter-provider-hcloud"),
+		//
+		// The deprecated call is unavoidable here, not an oversight.
+		// GetEventRecorder returns the newer events.EventRecorder, while
+		// operatorpkg's status.NewController takes a record.EventRecorder, so
+		// the migration is gated on operatorpkg rather than on us. Karpenter
+		// core carries the same suppression at pkg/operator/operator.go for
+		// the same reason.
+		op.GetEventRecorderFor("karpenter-provider-hcloud"), //nolint:staticcheck // SA1019: blocked on operatorpkg taking record.EventRecorder
 		hcloudapi.NewResources(hcloudClient),
 		catalogProvider,
 		// Uncached and direct, which is not interchangeable with GetClient:
