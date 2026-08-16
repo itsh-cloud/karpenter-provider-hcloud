@@ -24,12 +24,13 @@ const (
 	ClusterInfoName      = "cluster-info"
 )
 
-// Discovery resolves the join endpoint and CA pins from the cluster itself.
+// Discovery resolves the join endpoint and CA pins from the cluster itself,
+// at runtime.
 //
-// This replaces the pattern of committing a placeholder into a manifest and
-// substituting it at deploy time with sed, which fails silently whenever the
-// placeholder string is edited: the substitution simply does not match, and
-// nodes are handed an invalid token.
+// Reading them live rather than templating them in means there is no second
+// copy to drift: a CA rotation or an endpoint change is picked up on the next
+// refresh, and a stale value cannot be baked into a manifest where it fails
+// only at the point a node tries to join.
 type Discovery struct {
 	client client.Client
 

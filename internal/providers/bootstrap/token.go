@@ -45,9 +45,13 @@ const (
 
 // TokenMinter creates short-lived kubeadm bootstrap tokens, one per NodeClaim.
 //
-// This replaces a single non-expiring token with a hardcoded ID shared by every
-// node forever. Cleanup rides on two independent mechanisms, so no garbage
-// collection controller is needed here:
+// One token per node, each expiring, is what keeps a join credential from
+// becoming a standing one: the token is readable on the node it provisioned
+// and through the cloud console, so a shared or non-expiring token is a
+// permanent cluster-join credential distributed to every machine.
+//
+// Cleanup rides on two independent mechanisms, so no garbage collection
+// controller is needed here:
 //
 //  1. An ownerReference on the NodeClaim. A namespaced object may reference a
 //     cluster-scoped owner (only the reverse is forbidden), so the Secret is

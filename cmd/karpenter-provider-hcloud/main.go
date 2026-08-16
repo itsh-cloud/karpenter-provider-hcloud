@@ -27,6 +27,18 @@ func main() {
 		}
 	}
 
+	// Read-only debug subcommands, for inspecting what the provider would do
+	// before it does it.
+	if len(os.Args) > 1 {
+		if handled, err := runDebug(os.Args[1], os.Args[2:]); handled {
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				os.Exit(1)
+			}
+			return
+		}
+	}
+
 	ctx, op := operator.NewOperator()
 
 	// No controllers registered yet. The operator still serves /metrics and

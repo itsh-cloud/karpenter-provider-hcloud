@@ -16,13 +16,12 @@ import (
 const (
 	// DefaultRefreshInterval is how often the catalog is refetched.
 	//
-	// Ten minutes rather than the once-a-minute an earlier draft assumed,
-	// because the availability flag is not consulted (see the instancetype
-	// package) and what remains is slow-moving: server types, their locations
-	// and their prices. Hetzner's rate limit is 3600 requests/hour PER
-	// PROJECT and is shared with the CCM and the CSI driver, so this is
-	// budget someone else also needs. Upstream cluster-autoscaler uses the
-	// same ten minutes for server types.
+	// The availability flag is not consulted (see the instancetype package),
+	// so what this fetches is slow-moving: server types, their locations and
+	// their prices. Hetzner's rate limit is 3600 requests/hour PER PROJECT and
+	// is shared with the CCM and the CSI driver, so this is budget someone
+	// else also needs. Upstream cluster-autoscaler uses the same interval for
+	// its server-type cache.
 	DefaultRefreshInterval = 10 * time.Minute
 
 	// DefaultJitter is added to each refresh as a random 0..jitter.
