@@ -17,7 +17,7 @@ The token needs **read-write** on the project's servers.
 
 ```bash
 helm install karpenter-provider-hcloud oci://ghcr.io/itsh-cloud/charts/karpenter-provider-hcloud \
-  --version 0.1.0-alpha.2 --namespace karpenter
+  --version 0.1.0-alpha.3 --namespace karpenter
 ```
 
 Installing with no NodePool is inert: the controller resolves and reports every
@@ -30,9 +30,15 @@ the Hetzner API into `.status`, conditions roll up into `Ready`, the spec hash
 drift compares against is maintained, and a finalizer holds a class open while
 NodeClaims reference it.
 
-`CloudProvider` Create and Delete are **not** implemented yet, so this build
-cannot provision a node. It is useful for validating that a NodeClass resolves
-against your Hetzner project before the provisioning path lands.
+`CloudProvider` Create, Delete, Get and List are implemented, along with a
+garbage collector for servers whose NodeClaim has gone away. A NodePool
+referencing a ready NodeClass will provision nodes.
+
+Drift detection and node repair are deliberately still off. Everything else
+karpenter core ships is ON, including consolidation (whose NodePool defaults
+are `WhenEmptyOrUnderutilized` with `consolidateAfter: 0s`), expiration, and
+drain-and-evict termination. A NodePool that should not disrupt anything yet
+must say so itself with `spec.disruption.budgets: [{nodes: "0"}]`.
 
 ## What it grants, and why
 
