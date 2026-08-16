@@ -2,7 +2,8 @@
 
 A [Karpenter](https://karpenter.sh) cloud provider for [Hetzner Cloud](https://www.hetzner.com/cloud).
 
-> **Status: pre-alpha.** Not yet usable. See [Project status](#project-status).
+> **Status: alpha.** Provisions, consolidates and terminates nodes. The API may still
+> change. See [Project status](#project-status).
 
 ## Why
 
@@ -50,12 +51,52 @@ adopt it:
 - **Bootstrap tokens are minted per NodeClaim with a short TTL**, owned by the NodeClaim so
   they are garbage-collected when it goes away. There is no long-lived shared join token.
 
+## Quick start
+
+Requires a kubeadm-built cluster, hcloud-cloud-controller-manager, and a Hetzner project token
+with read-write on servers.
+
+```bash
+kubectl create namespace karpenter
+kubectl create secret generic hcloud -n karpenter --from-literal=token=<project-token>
+
+helm install karpenter-provider-hcloud \
+  oci://ghcr.io/itsh-cloud/charts/karpenter-provider-hcloud \
+  --namespace karpenter --set clusterName=<your-cluster-name>
+```
+
+`clusterName` has no default on purpose: it becomes the ownership label on every server, and
+every destructive path gates on it. Two clusters sharing one Hetzner project **must** use
+different names or each will treat the other's nodes as its own to delete.
+
+Then create an `HCloudNodeClass` and a `NodePool`. See [docs/nodeclass.md](docs/nodeclass.md)
+for the full API, and [docs/troubleshooting.md](docs/troubleshooting.md) before you debug
+anything.
+
+### One thing that will bite you
+
+Every NodePool must pin the capacity type:
+
+```yaml
+requirements:
+  - key: karpenter.sh/capacity-type
+    operator: In
+    values: [on-demand]
+```
+
+Hetzner has no spot capacity, but an unconstrained requirement is *unbounded*, so Karpenter
+concludes spot is permitted and pins every consolidation replacement to it. The launch then
+fails forever in a retry loop. This is the single most common way to misconfigure this
+provider, so [docs/troubleshooting.md](docs/troubleshooting.md) opens with it.
+
 ## Project status
 
-Under active initial development. The interface is not stable, nothing is released, and it
-should not be pointed at a cluster you care about.
+Alpha. It provisions nodes, replaces them on consolidation and drift, terminates them, and
+garbage-collects servers whose NodeClaim has gone away. It has been exercised against a real
+cluster and a real Hetzner project.
 
-Pin a released tag once one exists.
+Not yet done: ARM, non-Debian images, a `Custom` bootstrap mode, and IPv6-only nodes. The CRD
+is `v1alpha1` and may change. Pin a tag.
 
 ## Development
 
@@ -74,6 +115,13 @@ just generate   # regenerate CRDs and deepcopy (needs controller-gen)
 
 `just e2e` runs tests against a **real Hetzner project**, creating and destroying servers. It
 costs money, needs a scratch project, and is never run in CI.
+
+## Documentation
+
+- [docs/nodeclass.md](docs/nodeclass.md) — the `HCloudNodeClass` API
+- [docs/troubleshooting.md](docs/troubleshooting.md) — failure modes and how to read them
+- [chart/karpenter-provider-hcloud/README.md](chart/karpenter-provider-hcloud/README.md) — chart
+  values, and what the RBAC grants and why
 
 ## License
 
