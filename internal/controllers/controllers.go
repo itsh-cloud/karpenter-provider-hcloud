@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/karpenter/pkg/events"
 
 	"github.com/itsh-cloud/karpenter-provider-hcloud/api/v1alpha1"
+	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/controllers/instancegc"
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/controllers/nodeclass"
 	nodeclasshash "github.com/itsh-cloud/karpenter-provider-hcloud/internal/controllers/nodeclass/hash"
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/hcloudapi"
@@ -49,10 +50,16 @@ func NewControllers(
 	resources hcloudapi.Resources,
 	catalogProvider nodeclass.CatalogProvider,
 	discovery nodeclass.Discovery,
+	instances instancegc.Provider,
+	clusterName string,
 ) []controller.Controller {
 	return []controller.Controller{
 		nodeclasshash.NewController(kubeClient),
 		nodeclass.NewController(clk, kubeClient, recorder, resources, catalogProvider, discovery),
+		// Karpenter core ships the mirror of this and not this: it reaps
+		// NodeClaims whose instance is gone, never instances whose NodeClaim is
+		// gone, because only a provider can enumerate its own instances.
+		instancegc.NewController(clk, kubeClient, instances, clusterName),
 		// Observability only: this emits condition metrics and a Kubernetes
 		// event on every condition transition. It never writes to the API, so
 		// its unconditional ten-second requeue is a metric refresh rather than

@@ -31,9 +31,10 @@ func TestNewControllersDoesNotPanic(t *testing.T) {
 		events.NewRecorder(record.NewFakeRecorder(10)),
 		record.NewFakeRecorder(10),
 		nil, nil, nil,
+		nil, "itsh-prod",
 	)
-	if len(got) != 3 {
-		t.Errorf("NewControllers returned %d controllers, want 3", len(got))
+	if len(got) != 4 {
+		t.Errorf("NewControllers returned %d controllers, want 4", len(got))
 	}
 }
 

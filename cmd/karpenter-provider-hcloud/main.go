@@ -115,6 +115,8 @@ func main() {
 		// Uncached and direct, which is not interchangeable with GetClient:
 		// see NewDiscoveryFromManager.
 		discovery,
+		instanceProvider,
+		clusterName,
 	)...).WithControllers(ctx, corecontrollers.NewControllers(
 		ctx,
 		op.Manager,

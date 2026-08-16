@@ -336,14 +336,28 @@ func (c *CloudProvider) capacityFor(serverType string) corev1.ResourceList {
 // provisioned for it today.
 //
 // Deliberately inert in this phase, and that is a safety decision rather than
-// an omission. Drift is the one CloudProvider method whose return value causes
-// karpenter to DELETE running nodes: a false positive replaces the fleet. The
-// machinery it needs is already in place, the hash controller keeps
+// an omission. Drift is the CloudProvider method most able to do damage by
+// being wrong: a false positive replaces the fleet. The machinery it needs is
+// already in place, the hash controller keeps
 // karpenter.itsh.dev/hcloudnodeclass-hash on both the class and its NodeClaims,
 // but turning it on belongs with the drift tests and the metrics that make a
 // mistaken replacement visible while it is happening.
 //
-// Returning empty means "not drifted", so nothing is replaced until then.
+// # This does NOT mean nothing deletes nodes
+//
+// Read alone, "drift is off" invites the conclusion that this deployment
+// cannot replace a node. It can. Registering karpenter core's controllers
+// turns on, unconditionally:
+//
+//   - consolidation, whose NodePool defaults are WhenEmptyOrUnderutilized with
+//     consolidateAfter 0s, so an empty or underutilised node is deleted and
+//     replaced as soon as it qualifies;
+//   - expiration, default expireAfter 720h;
+//   - termination, which drains and evicts.
+//
+// Only drift and node repair are off. A NodePool that should not disrupt
+// anything yet has to say so itself, with spec.disruption.budgets [{nodes:
+// "0"}], which is how the first one here ships.
 func (c *CloudProvider) IsDrifted(_ context.Context, _ *karpv1.NodeClaim) (cloudprovider.DriftReason, error) {
 	return "", nil
 }
