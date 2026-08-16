@@ -17,11 +17,22 @@ The token needs **read-write** on the project's servers.
 
 ```bash
 helm install karpenter-provider-hcloud oci://ghcr.io/itsh-cloud/charts/karpenter-provider-hcloud \
-  --namespace karpenter
+  --version 0.1.0-alpha.1 --namespace karpenter
 ```
 
 Installing with no NodePool is inert: the controller resolves and reports every
 HCloudNodeClass, and provisions nothing until a NodePool references one.
+
+## Status
+
+Pre-release. The NodeClass controllers are complete: selectors resolve against
+the Hetzner API into `.status`, conditions roll up into `Ready`, the spec hash
+drift compares against is maintained, and a finalizer holds a class open while
+NodeClaims reference it.
+
+`CloudProvider` Create and Delete are **not** implemented yet, so this build
+cannot provision a node. It is useful for validating that a NodeClass resolves
+against your Hetzner project before the provisioning path lands.
 
 ## What it grants, and why
 

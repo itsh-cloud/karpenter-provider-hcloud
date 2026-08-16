@@ -137,6 +137,22 @@ jobs:
 
       - uses: actions/checkout@v6
 
+      # Published from the same tag as the image, so a chart version can never
+      # reference an appVersion that was never built. The chart templates the
+      # CRDs the binary is compiled against, which is why the two must ship
+      # together rather than on independent cadences.
+      - name: Package and push the Helm chart
+        run: |
+          helm registry login ghcr.io -u ${{ github.actor }} --password ${{ secrets.GITHUB_TOKEN }}
+          chart_version=$(helm show chart chart/karpenter-provider-hcloud | awk '/^version:/ {print $2}')
+          tag_version=${GITHUB_REF_NAME#v}
+          if [ "$chart_version" != "$tag_version" ]; then
+            echo "::error::Chart.yaml version $chart_version does not match tag $tag_version" >&2
+            exit 1
+          fi
+          helm package chart/karpenter-provider-hcloud --destination /tmp/chart
+          helm push /tmp/chart/karpenter-provider-hcloud-${chart_version}.tgz oci://ghcr.io/itsh-cloud/charts
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
