@@ -69,6 +69,12 @@ func (b *BootstrapDiscovery) Reconcile(ctx context.Context, nodeClass *v1alpha1.
 				// NodeClass to Ready=False, stop every NodePool, and make core
 				// delete in-flight NodeClaims, over an apiserver replica
 				// cycling for twenty seconds.
+				//
+				// A class that has NEVER resolved still gets a diagnosis, the
+				// same way the Hetzner resolvers do, so a persistently
+				// unreachable apiserver does not present as a NodeClass sitting
+				// silently at "awaiting reconciliation".
+				noteUnreachable(conds, v1alpha1.ConditionTypeBootstrapDiscoveryReady, "ClusterInfo", err)
 				return reconcile.Result{}, fmt.Errorf("reading cluster-info, %w", err)
 			}
 			// Configuration. The ConfigMap is absent because the control plane

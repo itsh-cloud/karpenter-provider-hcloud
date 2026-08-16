@@ -29,6 +29,14 @@ type CatalogProvider interface {
 // the dependency short-circuit, so that the two differ only in status.
 const reasonDependenciesNotReady = "DependenciesNotReady"
 
+// Reasons for the two ways of knowing nothing about the catalog. Named
+// constants because the catalog wake-up filter matches on them, so a typo in
+// either place would silently stop waking the classes that need it.
+const (
+	reasonCatalogNotFetched = "CatalogNotFetched"
+	reasonCatalogEmpty      = "CatalogEmpty"
+)
+
 // dependenciesMessage names the conditions actually holding validation back.
 //
 // Naming them costs nothing in churn: operatorpkg's ConditionSet.Set
@@ -133,9 +141,9 @@ func (v *Validation) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNo
 	// yields a non-nil snapshot with zero usable locations. That is the field
 	// Hetzner is changing before 2026-10-01.
 	if snapshot == nil || locations.catalogEmpty {
-		reason, message := "CatalogNotFetched", "the Hetzner server type catalog has not been fetched yet"
+		reason, message := reasonCatalogNotFetched, "the Hetzner server type catalog has not been fetched yet"
 		if snapshot != nil {
-			reason, message = "CatalogEmpty", "the Hetzner server type catalog reports no location offering any supported server type"
+			reason, message = reasonCatalogEmpty, "the Hetzner server type catalog reports no location offering any supported server type"
 		}
 		nodeClass.Status.Locations = nil
 		conds.SetUnknownWithReason(v1alpha1.ConditionTypeValidationSucceeded, reason, message)

@@ -783,10 +783,33 @@ func TestSSHKeyFailOpenIsNotDecidedByOrder(t *testing.T) {
 	}
 }
 
-// TestRequeueIntervals pins the values themselves. Nothing else asserts a
-// reconcile.Result, so an interval could otherwise be changed by an order of
-// magnitude unnoticed, and the catalog branch in particular is a full re-resolve
-// whose interval is throttled by nothing.
+// TestRequeueFloor pins the CONSTANTS, in literals.
+//
+// Asserting a returned interval against the constant it came from proves only
+// that the branch reads the right name: both sides move together, so editing
+// misconfiguredRequeue to five seconds passes that test while restoring the
+// amplification this floor exists to prevent. Every failure branch requeues a
+// full pass of up to eighteen uncached Hetzner GETs, and a RequeueAfter with a
+// nil error is throttled by neither rate limiter, so the interval IS the only
+// throttle there is.
+func TestRequeueFloor(t *testing.T) {
+	const floor = 30 * time.Second
+	if misconfiguredRequeue < floor {
+		t.Errorf("misconfiguredRequeue = %v, below the %v floor: at 5 Hetzner GETs per pass that is %.0f requests/hour "+
+			"from a single NodeClass, against a 3600/hour project limit shared with the CCM and the CSI driver",
+			misconfiguredRequeue, floor, 5*time.Hour.Seconds()/misconfiguredRequeue.Seconds())
+	}
+	if resolvedRequeue < misconfiguredRequeue {
+		t.Errorf("resolvedRequeue %v is not above misconfiguredRequeue %v; a healthy class must not poll harder than a broken one",
+			resolvedRequeue, misconfiguredRequeue)
+	}
+	if terminationBlockedRequeue < floor {
+		t.Errorf("terminationBlockedRequeue = %v, below the %v floor", terminationBlockedRequeue, floor)
+	}
+}
+
+// TestRequeueIntervals pins which interval each branch selects. Paired with
+// TestRequeueFloor, which pins what those intervals are worth.
 func TestRequeueIntervals(t *testing.T) {
 	ctx := context.Background()
 
@@ -931,5 +954,43 @@ func TestDuplicateLocationsAreDeduplicated(t *testing.T) {
 	}
 	if len(nc.Status.Locations) != 2 {
 		t.Errorf("status.locations = %+v, want nbg1 and fsn1 once each", nc.Status.Locations)
+	}
+}
+
+// TestFirewallReportsTheMostSevereCause.
+//
+// Firewalls always fail closed, so unlike ssh keys nothing about the OUTCOME
+// depends on this. The message does: reporting the last failure rather than the
+// worst sends an operator hunting for a deleted firewall when the real problem
+// is a dead token, and the reason suffix follows the message.
+func TestFirewallReportsTheMostSevereCause(t *testing.T) {
+	for _, tc := range []struct{ name, first, second string }{
+		{"fatalLast", "gone", "bad"},
+		{"notFoundLast", "bad", "gone"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			nodeClass := newNodeClass()
+			nodeClass.Spec.FirewallSelectors = []v1alpha1.FirewallSelectorTerm{{Name: tc.first}, {Name: tc.second}}
+			h := newHarness(t, nodeClass)
+			h.resources.firewall = func(name string) (*hcloudapi.Firewall, error) {
+				switch name {
+				case "gone":
+					return nil, &hcloudapi.NotFoundError{Kind: "firewall", Selector: name}
+				case "bad":
+					return nil, fatalErr
+				}
+				return &hcloudapi.Firewall{ID: 1, Name: name}, nil
+			}
+
+			nc, err := h.reconcile(ctx)
+			if err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+			assertCondition(t, nc, v1alpha1.ConditionTypeFirewallsReady, metav1.ConditionFalse, "FirewallCredentialRejected")
+			if got := condition(nc, v1alpha1.ConditionTypeFirewallsReady); !strings.Contains(got.Message, "credential") {
+				t.Errorf("FirewallsReady message = %q, want it to name the credential", got.Message)
+			}
+		})
 	}
 }

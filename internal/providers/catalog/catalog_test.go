@@ -258,3 +258,104 @@ func TestStartStopsOnContextCancel(t *testing.T) {
 		t.Errorf("only %d refreshes; the loop does not appear to have ticked", calls)
 	}
 }
+
+// TestRefreshSignalsWaiters.
+//
+// The wake-up is the only thing that makes a NodeClass blocked on the catalog
+// recover promptly: the requeue on that branch is a deliberately slow backstop,
+// because a short one is a full re-resolve that no rate limiter throttles. So a
+// silently broken signal does not fail, it degrades to a minute of delay that
+// nobody would ever notice.
+func TestRefreshSignalsWaiters(t *testing.T) {
+	f := &fakeCatalog{types: testTypes()}
+	p := NewProvider(f)
+
+	if err := p.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	select {
+	case <-p.Refreshed():
+	default:
+		t.Fatal("a successful refresh signalled no waiter")
+	}
+}
+
+// TestFailedRefreshDoesNotSignal: the signal means "there is a new snapshot",
+// so signalling on failure wakes every waiting NodeClass to find the same
+// nothing, which is the poll this design exists to remove.
+func TestFailedRefreshDoesNotSignal(t *testing.T) {
+	f := &fakeCatalog{err: errors.New("dial tcp: i/o timeout")}
+	p := NewProvider(f)
+
+	if err := p.Refresh(context.Background()); err == nil {
+		t.Fatal("expected the refresh to fail")
+	}
+	select {
+	case <-p.Refreshed():
+		t.Error("a failed refresh signalled a waiter")
+	default:
+	}
+}
+
+// TestRefreshNeverBlocksOnAnAbsentListener is the property that keeps the
+// refresh loop independent of its consumers. With a blocking send, a controller
+// that is not yet reading, which is the normal state before the manager starts,
+// would stall the catalog and therefore stall every NodeClass waiting on it.
+func TestRefreshNeverBlocksOnAnAbsentListener(t *testing.T) {
+	f := &fakeCatalog{types: testTypes()}
+	p := NewProvider(f)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 5 {
+			if err := p.Refresh(context.Background()); err != nil {
+				t.Errorf("Refresh: %v", err)
+				return
+			}
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Refresh blocked with nobody reading the wake-up channel")
+	}
+
+	// Coalesced to one: the signal carries no payload, so a pending wake-up
+	// already covers every refresh that happened since.
+	n := 0
+	for {
+		select {
+		case <-p.Refreshed():
+			n++
+			continue
+		default:
+		}
+		break
+	}
+	if n != 1 {
+		t.Errorf("five refreshes left %d pending wake-ups, want exactly 1", n)
+	}
+}
+
+// TestStaleForReportsNeverFetched: subtracting from the zero time prints a
+// meaningless 2562047h, and this is the common case, since the first refresh
+// failing is the precondition for the log line to exist at all.
+func TestStaleForReportsNeverFetched(t *testing.T) {
+	p := NewProvider(&fakeCatalog{err: errors.New("boom")})
+	if got := p.staleFor(); got != "never fetched" {
+		t.Errorf("staleFor() = %q before any successful fetch, want %q", got, "never fetched")
+	}
+
+	f := &fakeCatalog{types: testTypes()}
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	p2 := NewProvider(f, WithClock(func() time.Time { return now }))
+	if err := p2.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(90 * time.Second)
+	if got := p2.staleFor(); got != "1m30s" {
+		t.Errorf("staleFor() = %q, want 1m30s", got)
+	}
+}

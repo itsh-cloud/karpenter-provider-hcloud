@@ -32,6 +32,8 @@ import (
 	"sigs.k8s.io/karpenter/pkg/operator/injection"
 	"sigs.k8s.io/karpenter/pkg/utils/result"
 
+	"github.com/awslabs/operatorpkg/status"
+
 	"github.com/itsh-cloud/karpenter-provider-hcloud/api/v1alpha1"
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/hcloudapi"
 )
@@ -246,41 +248,79 @@ func (c *Controller) Register(ctx context.Context, m manager.Manager) error {
 	// Waking on the catalog rather than polling for it. Validation cannot
 	// succeed without the server type catalog, and the catalog is refreshed by
 	// a Runnable inside this same process, so there is nothing to poll: a
-	// landing snapshot enqueues every NodeClass once, and the requeue in that
-	// branch stays a slow backstop.
-	//
-	// Every NodeClass, because the signal carries no object. The list is served
-	// from the informer cache, and NodeClasses number in the single digits.
+	// landing snapshot enqueues the NodeClasses waiting on it, and the requeue
+	// in that branch stays a slow backstop.
 	if c.catalogRefreshed != nil {
 		events := make(chan event.GenericEvent)
-		go func() {
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-c.catalogRefreshed:
-					select {
-					case events <- event.GenericEvent{}:
-					case <-ctx.Done():
-						return
-					}
-				}
-			}
-		}()
-		b = b.WatchesRawSource(source.Channel(events,
-			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, _ client.Object) []reconcile.Request {
-				list := &v1alpha1.HCloudNodeClassList{}
-				if err := m.GetClient().List(ctx, list); err != nil {
-					log.FromContext(ctx).Error(err, "listing HCloudNodeClasses after a catalog refresh")
-					return nil
-				}
-				reqs := make([]reconcile.Request, 0, len(list.Items))
-				for i := range list.Items {
-					reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Name: list.Items[i].Name}})
-				}
-				return reqs
-			})))
+		go pumpRefreshSignal(ctx, c.catalogRefreshed, events)
+		b = b.WatchesRawSource(source.Channel(events, handler.EnqueueRequestsFromMapFunc(enqueueCatalogWaiters(m.GetClient()))))
 	}
 
 	return b.Complete(reconcile.AsReconciler(m.GetClient(), c))
+}
+
+// pumpRefreshSignal forwards catalog wake-ups onto the watch channel.
+//
+// A goroutine rather than handing the catalog's channel straight to
+// source.Channel, because the two have different types and, more importantly,
+// different blocking contracts: the catalog's send is non-blocking so a refresh
+// is never delayed by a listener, while source.Channel's reader does not start
+// until the manager does. Parking here absorbs that gap.
+func pumpRefreshSignal(ctx context.Context, src <-chan struct{}, dst chan<- event.GenericEvent) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-src:
+			select {
+			case dst <- event.GenericEvent{}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+}
+
+// enqueueCatalogWaiters returns a map func enqueueing the NodeClasses that are
+// actually blocked on the catalog.
+//
+// Filtered rather than fanning out to everything, because the signal carries no
+// object and the catalog refreshes roughly six times an hour. Waking every class
+// would add a full pass, five Hetzner GETs each, on top of the twelve an hour a
+// healthy class already does, for no benefit: a class that is already Ready
+// re-validates within resolvedRequeue anyway and re-running it early changes
+// nothing. Only a class parked on CatalogNotFetched or CatalogEmpty gains
+// anything from being told the catalog landed, so in the steady state this
+// costs nothing at all.
+func enqueueCatalogWaiters(c client.Reader) handler.MapFunc {
+	return func(ctx context.Context, _ client.Object) []reconcile.Request {
+		list := &v1alpha1.HCloudNodeClassList{}
+		if err := c.List(ctx, list); err != nil {
+			log.FromContext(ctx).Error(err, "listing HCloudNodeClasses after a catalog refresh")
+			return nil
+		}
+		var reqs []reconcile.Request
+		for i := range list.Items {
+			if waitingOnCatalog(&list.Items[i]) {
+				reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Name: list.Items[i].Name}})
+			}
+		}
+		return reqs
+	}
+}
+
+// waitingOnCatalog reports whether this NodeClass is parked on the catalog.
+//
+// Read WithObservedOnly: StatusConditions is a constructor, so the plain form
+// would fabricate every absent condition as Unknown on the in-memory copy. That
+// happens to give the right answer for a brand new class, which genuinely is
+// waiting, but it would arrive there by accident rather than by reading what is
+// on the object.
+func waitingOnCatalog(nodeClass *v1alpha1.HCloudNodeClass) bool {
+	cond := nodeClass.StatusConditions(status.WithObservedOnly()).Get(v1alpha1.ConditionTypeValidationSucceeded)
+	if cond == nil {
+		// Never reconciled. It needs the catalog and has not said so yet.
+		return true
+	}
+	return cond.IsUnknown() && (cond.Reason == reasonCatalogNotFetched || cond.Reason == reasonCatalogEmpty)
 }
