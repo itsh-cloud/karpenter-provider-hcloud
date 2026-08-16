@@ -6,13 +6,8 @@ type: application
 # Chart and app version move together: the chart templates the CRDs the binary
 # is compiled against, so a chart older or newer than its image can publish a
 # schema the controller cannot read.
-#
-# A pre-release on purpose. The NodeClass controllers are complete, but
-# CloudProvider Create/Delete is not, so this build reconciles and reports
-# NodeClasses and cannot yet provision a node. Tagging that 0.1.0 would promise
-# an autoscaler that does not autoscale.
-version: 0.1.0-alpha.5
-appVersion: "0.1.0-alpha.5"
+version: 0.1.0
+appVersion: "0.1.0"
 
 home: https://github.com/itsh-cloud/karpenter-provider-hcloud
 sources:

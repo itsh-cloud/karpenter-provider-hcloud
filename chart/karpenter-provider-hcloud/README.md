@@ -17,7 +17,7 @@ The token needs **read-write** on the project's servers.
 
 ```bash
 helm install karpenter-provider-hcloud oci://ghcr.io/itsh-cloud/charts/karpenter-provider-hcloud \
-  --version 0.1.0-alpha.5 --namespace karpenter
+  --version 0.1.0 --namespace karpenter
 ```
 
 Installing with no NodePool is inert: the controller resolves and reports every
@@ -25,21 +25,17 @@ HCloudNodeClass, and provisions nothing until a NodePool references one.
 
 ## Status
 
-Pre-release. The NodeClass controllers are complete: selectors resolve against
-the Hetzner API into `.status`, conditions roll up into `Ready`, the spec hash
-drift compares against is maintained, and a finalizer holds a class open while
-NodeClaims reference it.
+Alpha. It provisions nodes, replaces them on consolidation and drift, terminates them, and
+garbage-collects servers whose NodeClaim has gone away.
 
-`CloudProvider` Create, Delete, Get and List are implemented, along with a
-garbage collector for servers whose NodeClaim has gone away. A NodePool
-referencing a ready NodeClass will provision nodes.
+Drift detection is ON. Node repair is implemented but inert unless the `NodeRepair` feature
+gate is enabled. Consolidation, expiration and drain-and-evict termination are all on by
+default, so a NodePool that should not disrupt anything yet must say so itself with
+`spec.disruption.budgets: [{nodes: "0"}]`.
 
-Drift detection is implemented and ON. Node repair is implemented but inert
-unless the `NodeRepair` feature gate is enabled. Everything else
-karpenter core ships is ON, including consolidation (whose NodePool defaults
-are `WhenEmptyOrUnderutilized` with `consolidateAfter: 0s`), expiration, and
-drain-and-evict termination. A NodePool that should not disrupt anything yet
-must say so itself with `spec.disruption.budgets: [{nodes: "0"}]`.
+**Every NodePool must pin `karpenter.sh/capacity-type: [on-demand]`.** Hetzner has no spot
+capacity, but an unconstrained requirement is unbounded, so Karpenter pins consolidation
+replacements to spot and retries the failed launch indefinitely.
 
 ## What it grants, and why
 
