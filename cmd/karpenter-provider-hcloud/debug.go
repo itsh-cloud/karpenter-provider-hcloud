@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"sigs.k8s.io/yaml"
 
@@ -71,18 +72,28 @@ func runDiscover() error {
 //
 // With no arguments it renders a minimal NodeClass and a placeholder token, so
 // the output is safe to paste into a diff. Given a NodeClass YAML path it
-// renders that instead, and given a token as the second argument it uses it,
-// which is how a node can be provisioned by hand for verification.
+// renders that instead.
+//
+// A real token is read from a FILE named by the second argument, never from the
+// argv itself: a bootstrap token admits a node to the cluster, and an argv is
+// readable by every process on the machine through /proc and lands in shell
+// history. The rendered output still contains it, so redirect it to a file
+// rather than letting it scroll.
 func runRenderUserData(args []string) error {
-	var nodeClassPath, token string
+	var nodeClassPath, tokenPath string
 	if len(args) > 0 {
 		nodeClassPath = args[0]
 	}
 	if len(args) > 1 {
-		token = args[1]
+		tokenPath = args[1]
 	}
-	if token == "" {
-		token = "aaaaaa.bbbbbbbbbbbbbbbb"
+	token := "aaaaaa.bbbbbbbbbbbbbbbb"
+	if tokenPath != "" {
+		raw, err := os.ReadFile(tokenPath)
+		if err != nil {
+			return fmt.Errorf("reading token file: %w", err)
+		}
+		token = strings.TrimSpace(string(raw))
 	}
 	version := "1.34.7"
 

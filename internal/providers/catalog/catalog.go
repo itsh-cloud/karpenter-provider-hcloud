@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"sigs.k8s.io/controller-runtime/pkg/log"
+
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/hcloudapi"
 )
 
@@ -132,11 +134,21 @@ func (p *Provider) Refresh(ctx context.Context) error {
 }
 
 // Start refreshes until ctx is cancelled. It performs one refresh immediately
-// so that a caller can fail fast on a bad token rather than discovering it at
-// the first scale-up.
+// so that a bad token is reported at startup rather than at the first scale-up.
+//
+// Only a FATAL first refresh is returned. Run as a manager Runnable, returning
+// any error fails the manager and restarts the pod, so treating a Hetzner
+// outage or a 429 as fatal would CrashLoopBackOff for the duration of the
+// outage and take down the controllers that need no Hetzner access at all. A
+// rejected token is different: it will not fix itself, every retry burns rate
+// limit shared with the CCM and the CSI driver, and failing loudly at startup
+// is how an operator finds out.
 func (p *Provider) Start(ctx context.Context) error {
 	if err := p.Refresh(ctx); err != nil {
-		return err
+		if hcloudapi.Classify(err) == hcloudapi.ClassFatal {
+			return err
+		}
+		log.FromContext(ctx).Error(err, "initial catalog refresh failed, continuing without a catalog")
 	}
 
 	for {
@@ -145,10 +157,25 @@ func (p *Provider) Start(ctx context.Context) error {
 			return ctx.Err()
 		case <-time.After(p.nextInterval()):
 			// A failure here is deliberately not returned: the loop keeps
-			// running and keeps serving the last good snapshot.
-			_ = p.Refresh(ctx)
+			// running and keeps serving the last good snapshot. It is logged,
+			// because the alternative is Get() serving a boot-time snapshot
+			// indefinitely, with every condition reading True, after a token
+			// silently loses read on server types.
+			if err := p.Refresh(ctx); err != nil {
+				log.FromContext(ctx).Error(err, "catalog refresh failed, serving the last good snapshot",
+					"class", hcloudapi.Classify(err).String(), "staleFor", p.now().Sub(p.lastSuccess()).Truncate(time.Second).String())
+			}
 		}
 	}
+}
+
+// lastSuccess is when the served snapshot was fetched, or the zero time if
+// there has never been one.
+func (p *Provider) lastSuccess() time.Time {
+	if s := p.snapshot.Load(); s != nil {
+		return s.FetchedAt
+	}
+	return time.Time{}
 }
 
 func (p *Provider) nextInterval() time.Duration {

@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hetznercloud/hcloud-go/v2/hcloud"
+
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/hcloudapi"
 )
 
@@ -173,14 +175,59 @@ func TestZeroJitterIsExact(t *testing.T) {
 	}
 }
 
-// TestStartFailsFastOnFirstRefresh: a bad token should be an immediate startup
-// error, not something discovered at the first scale-up during an incident.
-func TestStartFailsFastOnFirstRefresh(t *testing.T) {
-	f := &fakeCatalog{err: errors.New("forbidden")}
+// TestStartFailsFastOnRejectedCredential: a bad token should be an immediate
+// startup error, not something discovered at the first scale-up during an
+// incident. It will not fix itself, and every retry burns rate limit shared
+// with the CCM and the CSI driver.
+func TestStartFailsFastOnRejectedCredential(t *testing.T) {
+	f := &fakeCatalog{err: hcloud.Error{Code: hcloud.ErrorCodeUnauthorized, Message: "unable to authenticate"}}
 	p := NewProvider(f)
 
 	if err := p.Start(context.Background()); err == nil {
-		t.Fatal("Start should return the first refresh error")
+		t.Fatal("Start should return a rejected credential")
+	}
+}
+
+// TestStartSurvivesTransientFirstRefresh.
+//
+// Start runs as a manager Runnable, so returning an error fails the manager and
+// restarts the pod. Treating a Hetzner outage or a 429 as fatal therefore
+// CrashLoopBackOffs for the duration of the outage, taking down the controllers
+// that need no Hetzner access at all, and the restarts themselves re-issue the
+// request that is being rate limited.
+func TestStartSurvivesTransientFirstRefresh(t *testing.T) {
+	f := &fakeCatalog{err: errors.New("dial tcp: i/o timeout")}
+	p := NewProvider(f, WithInterval(10*time.Millisecond), WithJitter(0))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- p.Start(ctx) }()
+
+	select {
+	case err := <-done:
+		cancel()
+		t.Fatalf("Start returned %v on a transient failure; the pod would CrashLoopBackOff through the outage", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("Start returned %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Start did not return after cancellation")
+	}
+
+	// Still no snapshot, and Get must report that as nil rather than as an
+	// empty catalog: zero instance types looks exactly like every pod being
+	// permanently unschedulable.
+	if p.Get() != nil {
+		t.Error("Get returned a snapshot after only failed refreshes")
+	}
+	if !p.Stale() {
+		t.Error("Stale is false after a failed refresh")
 	}
 }
 

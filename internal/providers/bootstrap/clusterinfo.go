@@ -12,9 +12,11 @@ import (
 	"sync"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 )
 
 const (
@@ -24,6 +26,41 @@ const (
 	ClusterInfoName      = "cluster-info"
 )
 
+// ConfigError marks a cluster-info failure that retrying will not fix: the
+// ConfigMap is absent, the read is forbidden, or the embedded kubeconfig is
+// unusable.
+//
+// The distinction is load-bearing for the caller. A configuration failure has
+// to be published on the NodeClass, because nothing else names it. A transport
+// failure must NOT be, because reporting a blip as a configuration error takes
+// every NodeClass to Ready=False, which makes karpenter core stop provisioning
+// and delete in-flight NodeClaims over a rolling apiserver restart. The default
+// is therefore transient: anything not recognised here is retried rather than
+// published, which costs a slow diagnosis at worst.
+type ConfigError struct{ err error }
+
+// NewConfigError marks err as a permanent configuration failure.
+func NewConfigError(err error) *ConfigError { return &ConfigError{err: err} }
+
+func (e *ConfigError) Error() string { return e.err.Error() }
+func (e *ConfigError) Unwrap() error { return e.err }
+
+// asConfigError wraps err when it is a permanent configuration failure, and
+// returns it untouched when it is worth retrying.
+func asConfigError(err error) error {
+	switch {
+	case apierrors.IsNotFound(err),
+		apierrors.IsForbidden(err),
+		apierrors.IsUnauthorized(err),
+		apierrors.IsBadRequest(err):
+		return &ConfigError{err: err}
+	default:
+		// Timeouts, 429s, 500s, a closed connection during a control-plane
+		// upgrade, and a cancelled context all land here.
+		return err
+	}
+}
+
 // Discovery resolves the join endpoint and CA pins from the cluster itself,
 // at runtime.
 //
@@ -32,15 +69,37 @@ const (
 // refresh, and a stale value cannot be baked into a manifest where it fails
 // only at the point a node tries to join.
 type Discovery struct {
-	client client.Client
+	// A Reader rather than a Client, deliberately: the only sane RBAC grant
+	// for this is `get` on the single cluster-info ConfigMap in kube-public,
+	// and a cached client would need list+watch on ConfigMaps to build its
+	// informer, so it would wedge the whole manager waiting for a cache that
+	// can never sync. Callers pass an uncached reader.
+	client client.Reader
 
 	mu       sync.RWMutex
 	endpoint string
 	hashes   []string
 }
 
+// NewDiscoveryFromManager returns a Discovery backed by the manager's direct
+// API reader. This is the constructor production code must use.
+//
+// It exists because the mistake it prevents is invisible. NewDiscovery takes a
+// client.Reader, which manager.GetClient() also satisfies, so passing the
+// cached client compiles cleanly. At runtime the delegating client lazily
+// starts a cluster-wide ConfigMap informer on first Get; the only sane RBAC for
+// this is `get` on one named ConfigMap, so the informer's list is denied, the
+// cache never syncs, and manager.Start blocks in WaitForCacheSync. The symptom
+// is a readyz failure that never mentions ConfigMaps.
+func NewDiscoveryFromManager(m manager.Manager) *Discovery {
+	return &Discovery{client: m.GetAPIReader()}
+}
+
 // NewDiscovery returns a Discovery backed by the given reader.
-func NewDiscovery(c client.Client) *Discovery { return &Discovery{client: c} }
+//
+// The reader must read straight from the apiserver. Prefer
+// NewDiscoveryFromManager; this constructor is for tests, which pass a fake.
+func NewDiscovery(c client.Reader) *Discovery { return &Discovery{client: c} }
 
 // Refresh reads kube-public/cluster-info and caches what it finds.
 //
@@ -50,17 +109,18 @@ func (d *Discovery) Refresh(ctx context.Context) error {
 	var cm corev1.ConfigMap
 	key := types.NamespacedName{Namespace: ClusterInfoNamespace, Name: ClusterInfoName}
 	if err := d.client.Get(ctx, key, &cm); err != nil {
-		return fmt.Errorf("reading %s/%s: %w", ClusterInfoNamespace, ClusterInfoName, err)
+		return asConfigError(fmt.Errorf("reading %s/%s: %w", ClusterInfoNamespace, ClusterInfoName, err))
 	}
 
 	raw, ok := cm.Data["kubeconfig"]
 	if !ok {
-		return fmt.Errorf("%s/%s has no kubeconfig key", ClusterInfoNamespace, ClusterInfoName)
+		return &ConfigError{err: fmt.Errorf("%s/%s has no kubeconfig key", ClusterInfoNamespace, ClusterInfoName)}
 	}
 
+	// The ConfigMap was read, so anything wrong with it now is its content.
 	endpoint, hashes, err := parseClusterInfo([]byte(raw))
 	if err != nil {
-		return err
+		return &ConfigError{err: err}
 	}
 
 	d.mu.Lock()
