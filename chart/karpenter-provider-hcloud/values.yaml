@@ -93,6 +93,10 @@ topologySpreadConstraints: []
 #
 # Cilium's matchPattern would not save you here either: its wildcard matches
 # within a single label, so a pattern cannot cover the search-domain variants.
+#
+# Note for anyone adding an in-cluster dependency later: the binding constraint
+# is the DNS proxy's ALLOWLIST, which permits one name, not this ndots setting.
+# A new in-cluster hostname needs a policy rule, not a resolver tweak.
 dnsConfig:
   options:
     - name: ndots
@@ -124,6 +128,16 @@ priorityClassName: system-cluster-critical
 podDisruptionBudget:
   enabled: true
   maxUnavailable: 1
+
+# Denies this ServiceAccount deleting a control plane Node, via a
+# ValidatingAdmissionPolicy.
+#
+# Karpenter core needs cluster-wide node delete and RBAC cannot say "only the
+# ones you made", so the usual bound is core's own logic. This adds an
+# apiserver-side one, which costs karpenter nothing because it never manages
+# control plane nodes. Needs Kubernetes 1.30 or newer for the GA API.
+protectControlPlaneNodes:
+  enabled: true
 
 service:
   # Metrics only. There is no webhook and no user-facing endpoint.

@@ -1,0 +1,66 @@
+{{- if .Values.protectControlPlaneNodes.enabled }}
+{{/*
+Denies THIS ServiceAccount deleting a control plane Node.
+
+Karpenter core's RBAC needs cluster-wide `delete` on nodes: terminating a
+NodeClaim means removing its Node, and RBAC cannot express "only the nodes you
+created". The bound that normally applies is core's own reconcile logic, which
+only acts on Nodes whose providerID it recognises. That bound is application
+logic, so it evaporates in exactly the two cases worth defending against: a
+logic bug, and a compromised ServiceAccount.
+
+This costs karpenter nothing. It never manages control plane nodes here: they
+are created by terraform, carry no ownership label, and are excluded from the
+provider's own delete path already. So the policy only ever fires on a request
+karpenter should not have been making.
+
+It does NOT defend against a stolen HCLOUD_TOKEN, which deletes the Hetzner
+servers directly without ever reaching the Kubernetes API. Nothing in this
+chart can.
+*/}}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ include "karpenter-provider-hcloud.fullname" . }}-protect-control-plane-nodes
+  labels:
+    {{- include "karpenter-provider-hcloud.labels" . | nindent 4 }}
+spec:
+  # Fail, not Ignore. A policy that cannot be evaluated must not silently
+  # permit the deletion it exists to prevent. The consequence of the safe
+  # direction is loud (karpenter stops terminating nodes and says so), where
+  # the unsafe direction is silent.
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["DELETE"]
+        resources: ["nodes"]
+  matchConditions:
+    # Scoped to this ServiceAccount alone. An operator with kubectl must stay
+    # able to delete a control plane node deliberately; this is about bounding
+    # an automated actor, not about making the object immutable.
+    - name: only-this-service-account
+      expression: >-
+        request.userInfo.username ==
+        'system:serviceaccount:{{ .Release.Namespace }}:{{ include "karpenter-provider-hcloud.serviceAccountName" . }}'
+  validations:
+    - expression: >-
+        !has(oldObject.metadata.labels) ||
+        !('node-role.kubernetes.io/control-plane' in oldObject.metadata.labels)
+      messageExpression: >-
+        'refusing to let the karpenter provider delete control plane node ' +
+        oldObject.metadata.name +
+        ': it carries node-role.kubernetes.io/control-plane and is not karpenter-managed'
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ include "karpenter-provider-hcloud.fullname" . }}-protect-control-plane-nodes
+  labels:
+    {{- include "karpenter-provider-hcloud.labels" . | nindent 4 }}
+spec:
+  policyName: {{ include "karpenter-provider-hcloud.fullname" . }}-protect-control-plane-nodes
+  validationActions: [Deny]
+{{- end }}
