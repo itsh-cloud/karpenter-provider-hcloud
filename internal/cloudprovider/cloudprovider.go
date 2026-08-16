@@ -341,6 +341,7 @@ func (c *CloudProvider) toNodeClaimFromServer(srv *hcloudapi.Server) *karpv1.Nod
 			Labels: map[string]string{
 				corev1.LabelInstanceTypeStable: srv.ServerType,
 				corev1.LabelTopologyRegion:     srv.Location,
+				corev1.LabelTopologyZone:       instancetype.LegacyDatacenterForLocation(srv.Location),
 				v1alpha1.LabelCSILocation:      srv.Location,
 				karpv1.CapacityTypeLabelKey:    karpv1.CapacityTypeOnDemand,
 			},

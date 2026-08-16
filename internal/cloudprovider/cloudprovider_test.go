@@ -262,18 +262,6 @@ func TestInstanceTypesRefuseAnEmptyCatalog(t *testing.T) {
 	}
 }
 
-// TestIsDriftedIsInert guards the deliberate Phase 6 decision. Drift is the one
-// method whose return value makes karpenter delete running nodes, so it stays
-// off until the tests and metrics that would catch a mistaken replacement
-// exist.
-func TestIsDriftedIsInert(t *testing.T) {
-	cp, _ := newTestProvider(t)
-	reason, err := cp.IsDrifted(context.Background(), &karpv1.NodeClaim{})
-	if err != nil || reason != "" {
-		t.Errorf("IsDrifted = %q, %v; want no drift while it is unimplemented", reason, err)
-	}
-}
-
 func TestNameIsStable(t *testing.T) {
 	cp, _ := newTestProvider(t)
 	if cp.Name() != "hcloud" {

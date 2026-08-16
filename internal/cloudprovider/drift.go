@@ -151,14 +151,22 @@ func serverDrift(nodeClass *v1alpha1.HCloudNodeClass, srv *hcloudapi.Server) clo
 		}
 	}
 
-	if net := nodeClass.Status.Network; net != nil && net.ID != 0 {
+	switch net := nodeClass.Status.Network; {
+	case net == nil:
+		// The NodeClass no longer asks for a private network, but the server is
+		// attached to one. That is a real change.
+		if len(srv.NetworkIDs) > 0 {
+			return NetworkDrift
+		}
+	case net.ID == 0:
+		// Present but unresolved. Nothing to compare against, so nothing can be
+		// concluded. Folding this into the nil case would read "the operator
+		// removed the network" from what is actually "we do not know yet", and
+		// replace the node for it.
+	default:
 		if !slices.Contains(srv.NetworkIDs, net.ID) {
 			return NetworkDrift
 		}
-	} else if len(srv.NetworkIDs) > 0 {
-		// The NodeClass no longer asks for a private network but the server is
-		// attached to one.
-		return NetworkDrift
 	}
 
 	// Firewalls are compared as a SET, not a sequence: hcloud returns them in

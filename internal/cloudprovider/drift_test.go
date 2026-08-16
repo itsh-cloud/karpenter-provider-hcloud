@@ -425,3 +425,75 @@ func TestClassWithoutAHashIsNotDrift(t *testing.T) {
 		t.Errorf("nodeClassHashDrift = %q with no hash on the NodeClass; that is a controller that has not caught up, not drift", got)
 	}
 }
+
+// TestUnreadableNodeClassIsAnErrorNotDrift.
+//
+// The twin of TestTransientReadFailureIsAnErrorNotDrift, for the OTHER read.
+// An apiserver blip while fetching the NodeClass must be retried, never
+// reported as a reason to replace a node. This one went unpinned while its
+// sibling was covered, which is how a mutation returning NodeClassDrift from
+// the error path survived a suite that looked complete.
+func TestUnreadableNodeClassIsAnErrorNotDrift(t *testing.T) {
+	// No NodeClass in the fake client at all, so the Get fails.
+	cp, _ := newTestProvider(t)
+
+	claim := &karpv1.NodeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "n1"},
+		Spec:       karpv1.NodeClaimSpec{NodeClassRef: &karpv1.NodeClassReference{Group: v1alpha1.Group, Kind: "HCloudNodeClass", Name: "missing"}},
+		Status:     karpv1.NodeClaimStatus{ProviderID: "hcloud://1"},
+	}
+	got, err := cp.IsDrifted(context.Background(), claim)
+	if err == nil {
+		t.Fatalf("IsDrifted = %q, nil when the NodeClass could not be read; that must be retried, not acted on", got)
+	}
+	if got != "" {
+		t.Errorf("IsDrifted returned reason %q alongside an error", got)
+	}
+}
+
+// TestServerDriftToleratesMissingLiveFields.
+//
+// Four guards whose only job is to suppress drift when the live server does not
+// report a field. Each was unpinned, and each turns "hcloud did not tell us"
+// into "replace this node" if removed. Grouped because they are one property:
+// absence of evidence is not evidence of change.
+func TestServerDriftToleratesMissingLiveFields(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*v1alpha1.HCloudNodeClass, *hcloudapi.Server)
+	}{
+		{"serverReportsNoLocation", func(_ *v1alpha1.HCloudNodeClass, srv *hcloudapi.Server) {
+			srv.Location = ""
+		}},
+		{"classHasAnUnresolvedNetwork", func(nc *v1alpha1.HCloudNodeClass, _ *hcloudapi.Server) {
+			// Resolved to a zero id rather than absent: nothing to compare.
+			nc.Status.Network = &v1alpha1.NetworkStatus{Name: "k8s-network"}
+		}},
+		{"serverReportsNoImage", func(nc *v1alpha1.HCloudNodeClass, srv *hcloudapi.Server) {
+			nc.Spec.ImageDriftPolicy = v1alpha1.ImageDriftPolicyReplace
+			srv.ImageID = 0
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			nc, srv := resolvedNodeClass(), matchingServer()
+			tc.mutate(nc, srv)
+			if got := serverDrift(nc, srv); got != "" {
+				t.Errorf("serverDrift = %q when the field is simply not reported; that replaces a node "+
+					"because hcloud returned less than usual", got)
+			}
+		})
+	}
+}
+
+// TestSameSetIgnoresDuplicates: hcloud can report the same firewall twice, and
+// a NodeClass can list a selector twice. Neither is a change.
+func TestSameSetIgnoresDuplicates(t *testing.T) {
+	nc := resolvedNodeClass()
+	nc.Status.Firewalls = []v1alpha1.FirewallStatus{{ID: 1}, {ID: 1}, {ID: 2}}
+	srv := matchingServer()
+	srv.FirewallIDs = []int64{2, 1}
+
+	if got := serverDrift(nc, srv); got != "" {
+		t.Errorf("serverDrift = %q for the same firewall set with a duplicate on one side", got)
+	}
+}

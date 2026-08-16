@@ -36,6 +36,23 @@ package instancetype
 //
 // The default mirrors the CCM's: a location the table does not know maps to
 // itself, which is also what the CCM's comment promises for new locations.
+//
+// # The failure mode to watch, which is not this table going stale
+//
+// Upstream recommends DISABLING the zone label for new clusters, via
+// HCLOUD_INSTANCES_ZONE_LABEL_ENABLED=false, and plans to remove it in the next
+// major version. Either of those breaks the price lookup just as thoroughly as
+// a wrong value here, and neither is detectable by comparing tables.
+//
+// Note also that karpenter's registration does
+// node.Labels = lo.Assign(node.Labels, nodeClaim.Labels), so the NodeClaim's
+// labels WIN over the Node's. If the CCM label is ever disabled, nodes this
+// provider creates would still carry a zone while every other node would not,
+// which is the mixed cluster upstream's guide warns about.
+//
+// The thing worth alerting on is therefore the SYMPTOM, not this table: a node
+// whose topology.kubernetes.io/zone is absent or disagrees with this function
+// is exactly the state in which consolidation silently stops working.
 func LegacyDatacenterForLocation(location string) string {
 	switch location {
 	case "nbg1":

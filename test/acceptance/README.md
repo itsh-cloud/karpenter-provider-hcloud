@@ -76,8 +76,10 @@ precisely because drift compares it live instead. Writing `[hel1]` alone narrows
 the resolved set to hel1 and drifts every nbg1 node, with the NodeClass
 reporting Ready throughout.
 
-Removing hel1 at teardown drifts only the hel1 node, which is the teardown
-behaviour you want.
+At teardown, write the list back explicitly as `[nbg1]`. Do not clear it: location
+drift only applies to an EXPLICIT spec.locations, so restoring it to unset
+disables location drift altogether and the hel1 node is never drifted at all. It
+would simply stay, and bill, until something else happens to remove it.
 
 Do **not** reach for a second NodeClass to avoid the edit. There is exactly one,
 deliberately, and a second would quietly undo that.
