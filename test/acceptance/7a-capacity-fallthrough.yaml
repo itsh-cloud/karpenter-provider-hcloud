@@ -22,8 +22,9 @@
 # Step 3 is the whole justification for the project, and it needs nothing from
 # the provider beyond an honest Price and Available.
 #
-# Safe to leave running: the limits cap it at one node, the taint keeps real
-# workloads off, and no teardown is required. Delete the NodePool when done.
+# Safe to leave running: one replica means one node, the limit caps it at two if
+# anything misbehaves, and the taint keeps real workloads off. Delete the
+# NodePool and Deployment when done.
 ---
 apiVersion: karpenter.sh/v1
 kind: NodePool
