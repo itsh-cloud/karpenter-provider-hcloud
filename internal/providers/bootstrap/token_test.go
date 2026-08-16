@@ -68,9 +68,13 @@ func TestMintCreatesShortLivedToken(t *testing.T) {
 	if got := data["auth-extra-groups"]; got != "system:bootstrappers:kubeadm:default-node-token" {
 		t.Errorf("auth-extra-groups = %q", got)
 	}
-	// The join pins the CA by hash, so nothing needs signing.
-	if got := data["usage-bootstrap-signing"]; got != "false" {
-		t.Errorf("usage-bootstrap-signing = %q, want false", got)
+	// Must be true. Verified the hard way against a real cluster: with this
+	// false, kubeadm join fails at preflight with "could not find a JWS
+	// signature in the cluster-info ConfigMap for token ID". The CA pin and
+	// the JWS are not redundant, and no unit test catches this.
+	if got := data["usage-bootstrap-signing"]; got != "true" {
+		t.Errorf("usage-bootstrap-signing = %q, want true; kubeadm join fails at "+
+			"preflight without the JWS signature bootstrapsigner writes for this token", got)
 	}
 	if got := data["usage-bootstrap-authentication"]; got != "true" {
 		t.Errorf("usage-bootstrap-authentication = %q, want true", got)

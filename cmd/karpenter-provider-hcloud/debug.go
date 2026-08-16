@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+
+	"sigs.k8s.io/yaml"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -64,13 +67,24 @@ func runDiscover() error {
 	return nil
 }
 
-// runRenderUserData prints the cloud-init a node would receive, using a
-// placeholder token so the output is safe to paste into a diff.
+// runRenderUserData prints the cloud-init a node would receive.
+//
+// With no arguments it renders a minimal NodeClass and a placeholder token, so
+// the output is safe to paste into a diff. Given a NodeClass YAML path it
+// renders that instead, and given a token as the second argument it uses it,
+// which is how a node can be provisioned by hand for verification.
 func runRenderUserData(args []string) error {
-	version := "1.34.7"
-	if len(args) > 0 && args[0] != "" {
-		version = args[0]
+	var nodeClassPath, token string
+	if len(args) > 0 {
+		nodeClassPath = args[0]
 	}
+	if len(args) > 1 {
+		token = args[1]
+	}
+	if token == "" {
+		token = "aaaaaa.bbbbbbbbbbbbbbbb"
+	}
+	version := "1.34.7"
 
 	endpoint, hashes := "10.1.0.2:6443", []string{"sha256:" + fmt.Sprintf("%064d", 0)}
 	if c, err := newReadOnlyClient(); err == nil {
@@ -90,16 +104,25 @@ func runRenderUserData(args []string) error {
 			},
 		},
 	}
+	if nodeClassPath != "" {
+		raw, err := os.ReadFile(nodeClassPath)
+		if err != nil {
+			return fmt.Errorf("reading NodeClass: %w", err)
+		}
+		nc = &v1alpha1.HCloudNodeClass{}
+		if err := yaml.Unmarshal(raw, nc); err != nil {
+			return fmt.Errorf("parsing NodeClass: %w", err)
+		}
+	}
 
 	out, err := bootstrap.Render(bootstrap.Input{
 		NodeClass: nc,
 		Join: bootstrap.JoinInput{
 			APIServerEndpoint: endpoint,
 			CACertHashes:      hashes,
-			// Deliberately not a real token: this output is for diffing.
-			Token:      "aaaaaa.bbbbbbbbbbbbbbbb",
-			NodeLabels: map[string]string{"karpenter.sh/nodepool": "example"},
-			Kubelet:    &nc.Spec.Kubelet,
+			Token:             token,
+			NodeLabels:        map[string]string{"karpenter.sh/nodepool": "example"},
+			Kubelet:           &nc.Spec.Kubelet,
 		},
 	})
 	if err != nil {

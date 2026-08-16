@@ -129,9 +129,17 @@ func (m *TokenMinter) Mint(ctx context.Context, nodeClaim *karpv1.NodeClaim, clu
 			"expiration":                     expiry,
 			"description":                    "karpenter " + nodeClaim.Name,
 			"usage-bootstrap-authentication": "true",
-			// Not needed: the join pins the CA by hash rather than trusting a
-			// signed cluster-info, so nothing has to sign anything.
-			"usage-bootstrap-signing": "false",
+			// Required, and not redundant with the CA pin.
+			//
+			// kube-controller-manager's bootstrapsigner writes a JWS signature
+			// into the cluster-info ConfigMap for every token with this set,
+			// and kubeadm refuses to join without finding one for its own
+			// token ID: "could not find a JWS signature in the cluster-info
+			// ConfigMap for token ID". The two checks answer different
+			// questions. The CA hash proves which cluster is being joined; the
+			// JWS proves the cluster-info was published by someone who knows
+			// this token, since it is fetched anonymously.
+			"usage-bootstrap-signing": "true",
 			// Kubernetes enforces the system:bootstrappers: prefix here, which
 			// is what bounds this from being a path to system:masters.
 			"auth-extra-groups": "system:bootstrappers:kubeadm:default-node-token",
