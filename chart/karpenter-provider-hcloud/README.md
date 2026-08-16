@@ -17,7 +17,7 @@ The token needs **read-write** on the project's servers.
 
 ```bash
 helm install karpenter-provider-hcloud oci://ghcr.io/itsh-cloud/charts/karpenter-provider-hcloud \
-  --version 0.1.0-alpha.4 --namespace karpenter
+  --version 0.1.0-alpha.5 --namespace karpenter
 ```
 
 Installing with no NodePool is inert: the controller resolves and reports every
