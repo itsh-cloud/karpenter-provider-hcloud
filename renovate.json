@@ -70,5 +70,19 @@
     "addLabels": [
       "security"
     ]
-  }
+  },
+  "customManagers": [
+    {
+      "description": "controller-gen is pinned in the justfile, where no manager reads it. Pinned is not the same as maintained.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "justfile"
+      ],
+      "matchStrings": [
+        "controller_gen_version\\s*:=\\s*\"(?<currentValue>[^\"]+)\""
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "kubernetes-sigs/controller-tools"
+    }
+  ]
 }
