@@ -16,12 +16,11 @@ import (
 )
 
 // CatalogProvider is the slice of the Hetzner catalog provider this controller
-// needs. Narrowed to an interface so the controller can be tested without a
-// catalog refresh loop.
+// needs, narrowed so the controller can be tested without a refresh loop.
 type CatalogProvider interface {
 	Get() *catalog.Snapshot
-	// Refreshed yields a value after each successful catalog refresh, so that
-	// a NodeClass blocked on the catalog is woken rather than polling for it.
+	// Refreshed yields a value after each successful catalog refresh, so a
+	// NodeClass blocked on the catalog is woken rather than polling for it.
 	Refreshed() <-chan struct{}
 }
 
@@ -39,12 +38,10 @@ const (
 
 // dependenciesMessage names the conditions actually holding validation back.
 //
-// Naming them costs nothing in churn: operatorpkg's ConditionSet.Set
-// short-circuits on a DeepEqual of the condition, so this rewrites only when
-// the failing set genuinely changes. It buys the one thing the roll-up cannot
-// say, because karpenter core copies this reason and message verbatim onto the
-// NodePool's NodeClassReady, where "awaiting resolution" of six things an
-// operator cannot see from there is not a diagnosis.
+// Karpenter core copies this reason and message verbatim onto the NodePool's
+// NodeClassReady, where a bare "awaiting resolution" of six things an operator
+// cannot see from there is not a diagnosis. It costs no churn: operatorpkg's
+// ConditionSet.Set short-circuits on a DeepEqual of the condition.
 func dependenciesMessage(failing []string) string {
 	return "awaiting " + strings.Join(failing, ", ")
 }
@@ -52,9 +49,8 @@ func dependenciesMessage(failing []string) string {
 // Validation checks the resolved parts of a NodeClass against each other and
 // computes the locations a node may actually be placed in.
 //
-// It must run LAST among the sub-reconcilers. It reports on the six other
-// conditions, and it reads status.network.zone that the network reconciler
-// resolves in the same pass.
+// It must run LAST: it reports on the six other conditions and reads
+// status.network.zone, which the network reconciler resolves in the same pass.
 type Validation struct {
 	clk      clock.Clock
 	recorder events.Recorder
@@ -81,10 +77,9 @@ func requiredConditions() []string {
 func (v *Validation) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNodeClass) (reconcile.Result, error) {
 	conds := nodeClass.StatusConditions(status.WithClock(v.clk))
 
-	// False beats Unknown. A dependency that has definitively failed makes
-	// validation definitively fail, and karpenter core copies this reason and
-	// message straight onto the NodePool's NodeClassReady condition, where a
-	// False is actionable and an Unknown reads as "the controller is confused".
+	// False beats Unknown. Core copies this straight onto the NodePool's
+	// NodeClassReady, where a False is actionable and an Unknown reads as "the
+	// controller is confused".
 	var failed, pending []string
 	for _, name := range requiredConditions() {
 		cond := conds.Get(name)
@@ -95,13 +90,10 @@ func (v *Validation) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNo
 			pending = append(pending, name)
 		case cond.ObservedGeneration != nodeClass.Generation:
 			// Resolved, but against a previous revision of the spec. Without
-			// this the architecture check below and every conclusion drawn from
-			// status would be evaluated against the old spec's resolution and
-			// then stamped True at the NEW generation, which reads as "this
-			// edit is validated" when nothing has re-resolved it yet. Reached
-			// whenever a spec edit coincides with one transient resolver
-			// failure, since the transient path deliberately leaves the
-			// condition untouched.
+			// this, conclusions drawn from the old resolution get stamped True
+			// at the NEW generation, reading as "this edit is validated" when
+			// nothing has re-resolved it. Reached whenever a spec edit coincides
+			// with a transient resolver failure, which leaves conditions alone.
 			pending = append(pending, name)
 		}
 	}
@@ -117,9 +109,9 @@ func (v *Validation) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNo
 	}
 
 	// An id-pinned image is not architecture-qualified by the resolver, so this
-	// is the only place a debian-13 ARM snapshot pinned onto an x86-only
-	// provider is caught. Left uncaught it produces servers that fail to boot,
-	// which Hetzner reports as a successful create.
+	// is the only place an ARM snapshot pinned onto an x86-only provider is
+	// caught. Uncaught it produces servers that fail to boot, which Hetzner
+	// reports as a successful create.
 	if img := nodeClass.Status.Image; img != nil && img.Architecture != "" && img.Architecture != SupportedArchitecture {
 		nodeClass.Status.Locations = nil
 		conds.SetFalse(v1alpha1.ConditionTypeValidationSucceeded, "ImageArchitectureUnsupported",
@@ -130,16 +122,13 @@ func (v *Validation) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNo
 	snapshot := v.catalog.Get()
 	locations := locationScope(snapshot, nodeClass)
 
-	// Two ways to know nothing about the catalog, and neither is a fact about
-	// this NodeClass, so neither may be False. A False here would take every
-	// NodeClass in the cluster to Ready=False at once, stop every NodePool and
-	// make core delete in-flight NodeClaims, over one bad response from an
-	// endpoint the operator does not control.
-	//
-	// The second case is not hypothetical: ServerTypes drops any location entry
-	// whose Location pointer is nil, so a 200 in a shape we did not expect
-	// yields a non-nil snapshot with zero usable locations. That is the field
-	// Hetzner is changing before 2026-10-01.
+	// Neither way of knowing nothing about the catalog is a fact about this
+	// NodeClass, so neither may be False: a False takes every NodeClass in the
+	// cluster to Ready=False at once, stops every NodePool and makes core delete
+	// in-flight NodeClaims, over one bad response from an endpoint the operator
+	// does not control. The empty case is reachable: ServerTypes drops any
+	// location entry whose Location pointer is nil, which is the field Hetzner
+	// is changing before 2026-10-01.
 	if snapshot == nil || locations.catalogEmpty {
 		reason, message := reasonCatalogNotFetched, "the Hetzner server type catalog has not been fetched yet"
 		if snapshot != nil {
@@ -147,22 +136,13 @@ func (v *Validation) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNo
 		}
 		nodeClass.Status.Locations = nil
 		conds.SetUnknownWithReason(v1alpha1.ConditionTypeValidationSucceeded, reason, message)
-		// Deliberately a SLOW backstop rather than a poll, because this branch
-		// cannot fix itself by being re-run: the catalog lives in this process,
-		// and the whole reconcile, resolvers included, repeats on every requeue.
-		//
-		// A short interval here is worse than it looks. RequeueAfter routes
-		// through Queue.Forget and AddAfter (controller-runtime's
-		// priorityQueueWrapper.AddWithOpts), which consults NEITHER the
-		// exponential limiter NOR the token bucket, so nothing throttles it.
-		// Five Hetzner GETs every five seconds is 3600 requests an hour from a
-		// single NodeClass, which is the entire per-project limit, shared with
-		// the CCM and the CSI driver. Both triggers can persist: a Hetzner
-		// outage at startup leaves the snapshot nil, and a response shape we do
-		// not expect leaves it non-nil and empty indefinitely.
-		//
-		// Promptness comes from the catalog waking us instead, see the
-		// Refreshed() watch in Register.
+		// A SLOW backstop, not a poll: this branch cannot fix itself by being
+		// re-run, and nothing throttles RequeueAfter, which routes through
+		// Queue.Forget and AddAfter and consults neither the exponential limiter
+		// nor the token bucket. Five Hetzner GETs every five seconds from one
+		// NodeClass is the entire per-project limit, shared with the CCM and the
+		// CSI driver, and both triggers can persist indefinitely. Promptness
+		// comes from the Refreshed() watch in Register instead.
 		return reconcile.Result{RequeueAfter: misconfiguredRequeue}, nil
 	}
 
@@ -175,18 +155,12 @@ func (v *Validation) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNo
 
 	nodeClass.Status.Locations = locations.inScope
 	if excluded := locations.excludedMessage(); excluded != "" {
-		// True, not False: the class can still place nodes, and taking the
-		// whole NodePool down over one unusable entry in a list of three turns
-		// an editing mistake into an outage. But a silently narrowed location
-		// set changes the capacity an operator believes they have, so it is
-		// said in the reason, in the message, and once more as an event, which
-		// is the only one of the three that shows up unprompted.
-		//
-		// The event is published on transition only. Karpenter's recorder
-		// dedupes for two minutes and this reconciler requeues every five, so
-		// the dedupe window always expires first: publishing unconditionally
-		// bills a stable, deliberately narrowed class ~288 Warning events a day
-		// and trains the operator to ignore the one that matters.
+		// True, not False: the class can still place nodes, and taking the whole
+		// NodePool down over one unusable entry turns an editing mistake into an
+		// outage. The narrowing is still said in the reason, the message and an
+		// event, the last being the only one that shows up unprompted. On
+		// transition only: the recorder's dedupe window is two minutes and this
+		// requeues every five, so publishing every pass is ~288 events a day.
 		prev := conds.Get(v1alpha1.ConditionTypeValidationSucceeded)
 		firstTime := prev == nil || prev.Reason != "LocationsNarrowed" || prev.Message != excluded
 		conds.SetTrueWithReason(v1alpha1.ConditionTypeValidationSucceeded, "LocationsNarrowed", excluded)
@@ -207,34 +181,28 @@ type scope struct {
 	outsideZone []string
 	// unknown are candidate locations no server type is offered in.
 	unknown []string
-	// catalogEmpty records that the catalog itself yielded no location at all,
-	// which is a fact about the catalog and not about this NodeClass. Kept
-	// separate because the two are otherwise indistinguishable from the
-	// outcome: with no locations known, every entry in spec.locations lands in
-	// unknown, and the failure would blame the operator's spec for an empty
-	// upstream response.
+	// catalogEmpty records that the catalog yielded no location at all, a fact
+	// about the catalog and not about this NodeClass. Kept separate because
+	// otherwise every entry in spec.locations lands in unknown and the failure
+	// blames the operator's spec for an empty upstream response.
 	catalogEmpty bool
-	// explicit records whether the candidates came from spec.locations.
-	//
-	// It gates the narrowing warning. Excluding a location the operator never
-	// asked for is the zone bound doing its job and is not news; excluding one
-	// they wrote down by hand means what they wrote is not what they got.
+	// explicit records whether the candidates came from spec.locations. It gates
+	// the narrowing warning: excluding a location nobody asked for is the zone
+	// bound doing its job, excluding one they wrote down is news.
 	explicit bool
 	// zone is the resolved private network's zone, or "" when no network is
-	// selected. Carried on the scope so the messages below name the same zone
-	// the intersection was computed against.
+	// selected. Carried here so the messages below name the same zone the
+	// intersection was computed against.
 	zone string
 }
 
 // locationScope resolves which Hetzner locations this NodeClass may place nodes
 // in.
 //
-// Three bounds intersect here. The catalog says where server types of the
-// supported architecture are sold. spec.locations is the operator's
-// infrastructure bound. The resolved private network's zone is a hard physical
-// bound: a server in one network zone cannot attach to a network in another, so
-// a location outside it is not a preference that can be overridden, it simply
-// cannot be used.
+// Three bounds intersect: the catalog (where supported server types are sold),
+// spec.locations (the operator's bound), and the private network's zone, which
+// is physical rather than a preference, because a server cannot attach to a
+// network in another zone.
 func locationScope(snapshot *catalog.Snapshot, nodeClass *v1alpha1.HCloudNodeClass) scope {
 	zones := map[string]string{}
 	if snapshot != nil {
@@ -244,8 +212,7 @@ func locationScope(snapshot *catalog.Snapshot, nodeClass *v1alpha1.HCloudNodeCla
 			}
 			for _, l := range st.Locations {
 				// A location-scoped deprecation is this type being phased out
-				// there, matching how the instance type catalog is built; a
-				// location that offers nothing else drops out entirely.
+				// there, matching how the instance type catalog is built.
 				if l.Deprecated {
 					continue
 				}
@@ -275,9 +242,8 @@ func locationScope(snapshot *catalog.Snapshot, nodeClass *v1alpha1.HCloudNodeCla
 		sort.Strings(names)
 	}
 
-	// Deduplicated because the CRD constrains the length and the shape of each
-	// entry but not uniqueness, and a repeated entry would otherwise become a
-	// repeated status.locations entry and, downstream, a duplicate offering.
+	// Deduplicated because the CRD constrains each entry's shape but not
+	// uniqueness, and a repeat becomes a duplicate offering downstream.
 	seen := make(map[string]bool, len(names))
 	for _, name := range names {
 		if seen[name] {
@@ -288,25 +254,20 @@ func locationScope(snapshot *catalog.Snapshot, nodeClass *v1alpha1.HCloudNodeCla
 		switch {
 		case !offered:
 			out.unknown = append(out.unknown, name)
-		// Excluded only when the location's zone is KNOWN and differs.
-		//
-		// The zone != networkZone test alone treats an unknown zone as a proven
-		// mismatch, which is the wrong way round: absence of evidence is not
-		// evidence of absence, and the cost of the two mistakes is wildly
-		// asymmetric. Wrongly excluding is total and self-inflicted, every
-		// location drops out and the NodeClass reports that nbg1 is not in
-		// eu-central. Wrongly including surfaces as one create failing against
-		// the real network with an error that names it.
+		// Excluded only when the location's zone is KNOWN and differs. The
+		// bare zone != networkZone test treats an unknown zone as a proven
+		// mismatch, and the two mistakes cost wildly differently: wrongly
+		// excluding drops every location, wrongly including surfaces as one
+		// create failing with an error that names the network.
 		case zone != "" && networkZone != "" && zone != networkZone:
 			out.outsideZone = append(out.outsideZone, name)
 		default:
 			out.inScope = append(out.inScope, v1alpha1.LocationStatus{
 				Name:        name,
 				NetworkZone: zone,
-				// Datacenters is deliberately left empty. Hetzner's datacenter
-				// API is deprecated and stops being returned after 2026-10-01,
-				// and server types are now reported per location rather than
-				// per datacenter, so there is nothing truthful to put here.
+				// Datacenters is deliberately empty: Hetzner's datacenter
+				// API is deprecated and stops being returned after
+				// 2026-10-01, and server types are reported per location.
 			})
 		}
 	}

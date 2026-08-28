@@ -16,8 +16,8 @@ import (
 )
 
 // nodeClaimGV is karpenter core's group/version. Built rather than referenced:
-// core does not export it as a variable, and constructing it here avoids
-// depending on the scheme having been registered first.
+// core does not export it, and constructing it avoids depending on the scheme
+// having been registered first.
 var nodeClaimGV = schema.GroupVersion{Group: apis.Group, Version: "v1"}
 
 const (
@@ -27,13 +27,10 @@ const (
 	// DefaultTokenTTL bounds how long a minted join token stays valid.
 	//
 	// The floor is Karpenter core's node registration timeout, a hardcoded 15
-	// minutes: a token that expires before core gives up produces a silent
+	// minutes: a token expiring before core gives up produces a silent
 	// replacement loop with no useful error anywhere. 30 minutes is twice that
-	// and still bounds exposure to half an hour rather than forever.
-	//
-	// The exposure is real: a node's cloud-init user_data contains a live
-	// token, readable on the node at /var/lib/cloud/instance/user-data.txt and
-	// through the Hetzner console.
+	// and still bounds real exposure, since a node's user_data carries the live
+	// token and is readable on the node and through the Hetzner console.
 	DefaultTokenTTL = 30 * time.Minute
 
 	tokenIDLength     = 6
@@ -45,26 +42,19 @@ const (
 
 // TokenMinter creates short-lived kubeadm bootstrap tokens, one per NodeClaim.
 //
-// One token per node, each expiring, is what keeps a join credential from
-// becoming a standing one: the token is readable on the node it provisioned
-// and through the cloud console, so a shared or non-expiring token is a
-// permanent cluster-join credential distributed to every machine.
+// One expiring token per node keeps a join credential from becoming a standing
+// one: a shared or non-expiring token would be a permanent cluster-join
+// credential readable from every machine's userdata.
 //
-// Cleanup rides on two independent mechanisms, so no garbage collection
-// controller is needed here:
+// Cleanup needs no controller here. An ownerReference on the NodeClaim (a
+// namespaced object may reference a cluster-scoped owner, only the reverse is
+// forbidden) collects the Secret when the NodeClaim goes away, including on
+// failed registration, revoking EARLIER than the token's own expiry;
+// kube-controller-manager's tokencleaner covers expiry independently.
 //
-//  1. An ownerReference on the NodeClaim. A namespaced object may reference a
-//     cluster-scoped owner (only the reverse is forbidden), so the Secret is
-//     collected whenever the NodeClaim goes away, including when registration
-//     fails and core deletes it. That revokes the token EARLIER than its own
-//     expiry, which is the fail-safe direction.
-//  2. kube-controller-manager's tokencleaner, which removes any token past its
-//     expiration regardless of what this controller does.
-//
-// Because neither requires listing secrets, the RBAC here is create and delete
-// with NO get, list or watch. That absence is load-bearing: it blocks the
-// standard escalation of minting a service-account-token secret for a
-// privileged service account and then reading the result.
+// Neither path lists secrets, so the RBAC here is create and delete with NO
+// get, list or watch. That absence blocks the standard escalation of minting a
+// service-account-token secret for a privileged service account and reading it.
 type TokenMinter struct {
 	client client.Client
 	ttl    time.Duration
@@ -129,16 +119,12 @@ func (m *TokenMinter) Mint(ctx context.Context, nodeClaim *karpv1.NodeClaim, clu
 			"expiration":                     expiry,
 			"description":                    "karpenter " + nodeClaim.Name,
 			"usage-bootstrap-authentication": "true",
-			// Required, and not redundant with the CA pin.
-			//
-			// kube-controller-manager's bootstrapsigner writes a JWS signature
-			// into the cluster-info ConfigMap for every token with this set,
-			// and kubeadm refuses to join without finding one for its own
-			// token ID: "could not find a JWS signature in the cluster-info
-			// ConfigMap for token ID". The two checks answer different
-			// questions. The CA hash proves which cluster is being joined; the
-			// JWS proves the cluster-info was published by someone who knows
-			// this token, since it is fetched anonymously.
+			// Required, and not redundant with the CA pin. It makes
+			// kube-controller-manager's bootstrapsigner publish a JWS signature
+			// into cluster-info, without which kubeadm refuses to join. The CA
+			// hash proves which cluster is being joined; the JWS proves the
+			// anonymously fetched cluster-info came from someone who knows this
+			// token.
 			"usage-bootstrap-signing": "true",
 			// Kubernetes enforces the system:bootstrappers: prefix here, which
 			// is what bounds this from being a path to system:masters.
@@ -154,8 +140,8 @@ func (m *TokenMinter) Mint(ctx context.Context, nodeClaim *karpv1.NodeClaim, clu
 
 // Revoke deletes the token for a NodeClaim on a best-effort basis.
 //
-// Not required for correctness, since the ownerReference and tokencleaner both
-// cover it, but it makes revocation immediate on an orderly delete.
+// Not required for correctness, since the ownerReference and tokencleaner cover
+// it, but it makes revocation immediate on an orderly delete.
 func (m *TokenMinter) Revoke(ctx context.Context, tokenID string) error {
 	obj := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
 		Namespace: TokenNamespace,

@@ -13,13 +13,11 @@ import (
 )
 
 // DefaultCreateTimeout bounds how long a create waits for its action to settle.
-//
-// Server creation is asynchronous: the POST returns an Action, and a placement
-// failure can surface either synchronously in the POST or minutes later in that
-// action. Waiting forever would pin a NodeClaim on a create that is never going
-// to succeed; ninety seconds is comfortably above a normal create and well
-// under karpenter core's fifteen-minute registration timeout, leaving room to
-// fall through to another server type and still register.
+// Creation is asynchronous, and a placement failure can surface either in the
+// POST or minutes later in the action it returns. Ninety seconds is well above
+// a normal create and well under karpenter core's fifteen-minute registration
+// timeout, leaving room to fall through to another server type and still
+// register.
 const DefaultCreateTimeout = 90 * time.Second
 
 // Server is one Hetzner server in this provider's own terms.
@@ -27,13 +25,11 @@ type Server struct {
 	ID         int64
 	Name       string
 	ServerType string
-	// Location is the Hetzner location, e.g. nbg1.
-	//
-	// There is deliberately no Datacenter field. hcloud-go no longer exposes
-	// one on a server, matching the retirement of the datacenter API, and this
-	// provider orders by location and never by datacenter. The finer
-	// nbg1-dc3 reaches Kubernetes as topology.kubernetes.io/zone, written by
-	// hcloud-CCM from whichever datacenter the server actually landed in.
+	// Location is the Hetzner location, e.g. nbg1. There is deliberately no
+	// Datacenter field: hcloud-go no longer exposes one on a server, and this
+	// provider orders by location. The finer nbg1-dc3 reaches Kubernetes as
+	// topology.kubernetes.io/zone, written by hcloud-CCM from whichever
+	// datacenter the server landed in.
 	Location string
 	Status   string
 	Labels   map[string]string
@@ -43,11 +39,10 @@ type Server struct {
 	PrivateIPv4 string
 	PublicIPv4  string
 
-	// The fields below exist so drift can compare a running server against what
-	// its NodeClass says today. hcloud returns all of them on a GET, which is
-	// what makes them comparable at all; user_data and ssh_keys are NOT
-	// returned, which is exactly why those two are covered by the spec hash
-	// instead.
+	// The fields below let drift compare a running server against what its
+	// NodeClass says today. hcloud returns all of them on a GET; user_data and
+	// ssh_keys are NOT returned, which is why those two are covered by the
+	// spec hash instead.
 	NetworkIDs       []int64
 	FirewallIDs      []int64
 	PlacementGroupID int64
@@ -73,8 +68,7 @@ func ServerIDFromProviderID(providerID string) (int64, error) {
 		return 0, fmt.Errorf("providerID %q is not an hcloud provider id", providerID)
 	}
 	// ParseInt rather than a scan, so trailing rubbish is rejected instead of
-	// silently truncated: the id this yields selects the server a delete acts
-	// on.
+	// silently truncated: this id selects the server a delete acts on.
 	id, err := strconv.ParseInt(rest, 10, 64)
 	if err != nil || id <= 0 {
 		return 0, fmt.Errorf("providerID %q has no valid server id", providerID)
@@ -82,12 +76,10 @@ func ServerIDFromProviderID(providerID string) (int64, error) {
 	return id, nil
 }
 
-// CreateServerRequest is one fully resolved server order.
-//
-// Everything here is an id or a literal, never a selector: resolution happens
-// in the NodeClass controllers and is published on its status, so a create can
-// never race a selector that resolves differently between the decision and the
-// order.
+// CreateServerRequest is one fully resolved server order. Everything here is an
+// id or a literal, never a selector: resolution happens in the NodeClass
+// controllers, so a create cannot race a selector that resolves differently
+// between the decision and the order.
 type CreateServerRequest struct {
 	Name       string
 	ServerType string
@@ -147,9 +139,8 @@ func (s *serverClient) Create(ctx context.Context, req CreateServerRequest) (*Se
 		// stopped never runs cloud-init, so it never joins, and the only
 		// symptom is a NodeClaim that ages out after fifteen minutes.
 		StartAfterCreate: hcloud.Ptr(true),
-		// Volumes are attached by the CSI driver, never at create time. Leaving
-		// automount on would mount whatever was passed into the filesystem
-		// behind the CSI driver's back.
+		// Volumes are attached by the CSI driver, never at create time.
+		// Automount would mount whatever was passed behind the driver's back.
 		Automount: hcloud.Ptr(false),
 		PublicNet: &hcloud.ServerCreatePublicNet{
 			EnableIPv4: req.PublicIPv4,
@@ -177,13 +168,11 @@ func (s *serverClient) Create(ctx context.Context, req CreateServerRequest) (*Se
 		return nil, fmt.Errorf("creating server %q: hetzner returned no server", req.Name)
 	}
 
-	// The action is waited on rather than assumed successful. A create that
-	// returns 201 can still fail placement afterwards, and treating the 201 as
-	// success produces a NodeClaim pointing at a server that will never exist.
-	//
-	// The leftover is deleted on failure: hcloud has already allocated the name
-	// and the id, so leaving it behind both bills and blocks the retry with a
-	// uniqueness_error on the same name.
+	// The action is waited on rather than assumed successful: a create that
+	// returns 201 can still fail placement afterwards, leaving a NodeClaim
+	// pointing at a server that will never exist. On failure the leftover is
+	// deleted, because hcloud has already allocated the name and the id, so
+	// keeping it both bills and blocks the retry with a uniqueness_error.
 	waitCtx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 
@@ -206,19 +195,17 @@ func (s *serverClient) Create(ctx context.Context, req CreateServerRequest) (*Se
 }
 
 // deleteQuietly removes a server on a best-effort basis, for the cleanup path
-// where the caller is already returning an error.
-//
-// Deliberately takes a context detached from the failed operation: the common
-// reason to be here is a create that timed out, and reusing that cancelled
-// context would skip the cleanup exactly when it is needed.
+// where the caller is already returning an error. It takes a context detached
+// from the failed operation: the common reason to be here is a create that
+// timed out, and reusing that cancelled context would skip the cleanup exactly
+// when it is needed.
 func (s *serverClient) deleteQuietly(ctx context.Context, id int64, name string) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if _, _, err := s.c.Server.DeleteWithResult(ctx, &hcloud.Server{ID: id}); err != nil {
-		// Quiet about the happy path, never about this. A failed cleanup leaves
-		// a running, billing server that booted with a valid join token, so it
-		// will register as a Node with no NodeClaim behind it. Nothing else
-		// reports it, which is exactly why it has to be said here.
+		// Never quiet about this: a failed cleanup leaves a running, billing
+		// server that booted with a valid join token, so it registers as a Node
+		// with no NodeClaim behind it, and nothing else reports it.
 		log.FromContext(ctx).Error(err, "FAILED to remove the leftover server after a failed create; "+
 			"it is still running and will join the cluster unowned",
 			"server", name, "id", id)
@@ -229,8 +216,8 @@ func (s *serverClient) Delete(ctx context.Context, id int64) error {
 	_, _, err := s.c.Server.DeleteWithResult(ctx, &hcloud.Server{ID: id})
 	if err != nil {
 		// Already gone is success. Karpenter retries Delete until it reports
-		// not-found, so mapping this to an error would spin forever on a server
-		// somebody removed by hand.
+		// not-found, so mapping this to an error would spin forever on a
+		// server somebody removed by hand.
 		if hcloud.IsError(err, hcloud.ErrorCodeNotFound) {
 			return &NotFoundError{Kind: "server", Selector: fmt.Sprint(id)}
 		}
@@ -307,8 +294,7 @@ func serverFromHcloud(srv *hcloud.Server) *Server {
 		out.FirewallIDs = append(out.FirewallIDs, fw.Firewall.ID)
 	}
 	// The first private network address. Nodes join over the private network,
-	// so this is the address that matters, and a server with none is one that
-	// cannot reach the API server.
+	// so a server with none cannot reach the API server.
 	for _, n := range srv.PrivateNet {
 		if n.IP != nil && out.PrivateIPv4 == "" {
 			out.PrivateIPv4 = n.IP.String()

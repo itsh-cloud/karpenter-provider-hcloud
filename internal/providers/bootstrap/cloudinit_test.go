@@ -55,14 +55,12 @@ func fileByPath(cfg cloudConfig, path string) (writeFile, bool) {
 	return writeFile{}, false
 }
 
-// TestUnregisteredTaintIsRendered is the regression test for the quietest
-// failure in this package.
+// TestUnregisteredTaintIsRendered.
 //
 // Karpenter core logs an error and PROCEEDS when a node registers without
-// karpenter.sh/unregistered, so omitting it produces no visible symptom. What
-// actually happens is that pods land in the window between the kubelet
-// registering and Karpenter stamping its labels, and bin-packing accounting is
-// wrong from the first second.
+// karpenter.sh/unregistered, so omitting it produces no visible symptom: pods
+// land in the window between the kubelet registering and Karpenter stamping
+// its labels, and bin-packing accounting is wrong from the first second.
 func TestUnregisteredTaintIsRendered(t *testing.T) {
 	_, cfg := render(t, testInput())
 
@@ -184,11 +182,10 @@ func TestDeterministicOutput(t *testing.T) {
 
 // TestExtraFilesCannotEscapeTheDocument.
 //
-// ExtraFiles content is operator-supplied and arbitrary. Rendering the
-// document from a text template would let content containing YAML terminate
-// its own block and rewrite the rest, including the join configuration and its
-// bootstrap token. Marshalling structs makes that structurally impossible;
-// this test proves it.
+// ExtraFiles content is operator-supplied and arbitrary. Rendering from a text
+// template would let content containing YAML terminate its own block and
+// rewrite the rest, join configuration and bootstrap token included.
+// Marshalling structs makes that structurally impossible.
 func TestExtraFilesCannotEscapeTheDocument(t *testing.T) {
 	in := testInput()
 	malicious := "innocent\n" +

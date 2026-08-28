@@ -15,12 +15,10 @@ import (
 // SupportedArchitecture is the Hetzner architecture this provider builds
 // instance types for.
 //
-// It is the same value instancetype.Options defaults IncludeArchitectures to,
-// and the two must agree: an image resolved for one architecture cannot boot on
-// a server type offered for the other. The image reconciler qualifies name
-// lookups with it, and the validation reconciler re-checks the resolved image
-// against it so that an id-pinned image of the wrong architecture is caught
-// before a server is ever ordered.
+// It must agree with instancetype.Options' IncludeArchitectures default: an
+// image resolved for one architecture cannot boot on a server type offered for
+// the other. Name lookups are qualified with it here; an id-pinned image is
+// re-checked against it in validation.
 const SupportedArchitecture = "x86"
 
 // Image resolves spec.imageSelector into status.image.
@@ -46,20 +44,17 @@ func (i *Image) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNodeCla
 			)
 			return reconcile.Result{RequeueAfter: misconfiguredRequeue}, nil
 		}
-		// Transient. The condition is deliberately left untouched rather than
-		// set Unknown: an already-resolved class keeps its True condition at
-		// the current generation, so a Hetzner blip does not ripple out into
-		// NodeClassReady=False on every NodePool using it. A class that was
-		// never resolved still reads Unknown from initialisation, so nothing
-		// provisions against an unknown image either.
+		// Transient, so the condition is left untouched rather than set
+		// Unknown: an already-resolved class keeps its True condition and a
+		// Hetzner blip does not ripple into NodeClassReady=False. A class that
+		// never resolved still reads Unknown from initialisation.
 		noteUnreachable(nodeClass.StatusConditions(status.WithClock(i.clk)), v1alpha1.ConditionTypeImageReady, "Image", err)
 		return reconcile.Result{}, fmt.Errorf("resolving image, %w", err)
 	}
 
-	// The image is re-resolved rather than pinned because a name follows
-	// Hetzner's periodic rebuilds and its id changes with each one. Whether
-	// that rolls the fleet is spec.imageDriftPolicy's decision, not this
-	// controller's; status simply reports what the name maps to today.
+	// Re-resolved rather than pinned, because a name follows Hetzner's periodic
+	// rebuilds and its id changes with each one. Whether that rolls the fleet is
+	// spec.imageDriftPolicy's decision; status reports what the name maps to.
 	nodeClass.Status.Image = &v1alpha1.ImageStatus{
 		ID:           img.ID,
 		Name:         img.Name,
@@ -71,9 +66,8 @@ func (i *Image) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNodeCla
 	return reconcile.Result{RequeueAfter: resolvedRequeue}, nil
 }
 
-// describeSelector renders a name-or-id selector for a condition message.
-// Deterministic by construction: it reads only from the spec, so the message
-// cannot churn between otherwise identical reconciles.
+// describeSelector renders a name-or-id selector for a condition message. It
+// reads only from the spec, so the message cannot churn between reconciles.
 func describeSelector(name string, id *int64) string {
 	if id != nil {
 		return fmt.Sprintf("id %d", *id)

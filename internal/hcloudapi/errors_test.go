@@ -16,14 +16,12 @@ func TestClassify(t *testing.T) {
 		code hcloud.ErrorCode
 		want Class
 	}{
-		// The founding failure. On 2026-08-11 an entire server-type line went
-		// out of stock in one location and the fallback that followed was
-		// never undone. Getting this wrong is the whole ballgame.
+		// The one that matters most: a server type out of stock in one
+		// location has to route around itself rather than hot-loop.
 		{"resource_unavailable", hcloud.ErrorCodeResourceUnavailable, ClassCapacity},
-		// Missing from at least one third-party provider. A spread placement
-		// group that is full, or a location with no host that fits, both
-		// report this; treating it as generic means retrying the same doomed
-		// combination until something else changes.
+		// A full spread placement group and a location with no host that fits
+		// both report this; treating it as generic means retrying the same
+		// doomed combination until something else changes.
 		{"placement_error", hcloud.ErrorCodePlacementError, ClassCapacity},
 		{"no_space_left_in_location", hcloud.ErrorCodeNoSpaceLeftInLocation, ClassCapacity},
 		{"maintenance", hcloud.ErrorCodeMaintenance, ClassCapacity},
@@ -31,9 +29,9 @@ func TestClassify(t *testing.T) {
 		// Not stock: another server type will not help.
 		{"resource_limit_exceeded", hcloud.ErrorCodeResourceLimitExceeded, ClassQuota},
 
-		// Must never be capacity. Rate limiting is caused by our own request
-		// volume, so suppressing offerings for it would convert a slowdown
-		// into a self-inflicted capacity outage.
+		// Must never be capacity: rate limiting is caused by our own request
+		// volume, so suppressing offerings would convert a slowdown into a
+		// self-inflicted capacity outage.
 		{"rate_limit_exceeded", hcloud.ErrorCodeRateLimitExceeded, ClassTransient},
 		{"service_error", hcloud.ErrorCodeServiceError, ClassTransient},
 		{"server_error", hcloud.ErrorCodeServerError, ClassTransient},
@@ -53,8 +51,8 @@ func TestClassify(t *testing.T) {
 		{"invalid_server_type", hcloud.ErrorCodeInvalidServerType, ClassConfig},
 		{"uniqueness_error", hcloud.ErrorCodeUniquenessError, ClassConfig},
 
-		// Retrying cannot fix a wrong credential, and each attempt burns
-		// rate limit that provisioning needs.
+		// Retrying cannot fix a wrong credential, and each attempt burns rate
+		// limit that provisioning needs.
 		{"forbidden", hcloud.ErrorCodeForbidden, ClassFatal},
 		{"unauthorized", hcloud.ErrorCodeUnauthorized, ClassFatal},
 		{"token_readonly", hcloud.ErrorCodeTokenReadonly, ClassFatal},
@@ -73,15 +71,13 @@ func TestClassify(t *testing.T) {
 	}
 }
 
-// TestClassifyActionError is the regression test for the subtle half of the
-// capacity-handling bug.
+// TestClassifyActionError covers the subtle half of capacity handling.
 //
-// Server creation is asynchronous. The API returns an Action, and the
-// placement decision fails later, arriving as hcloud.ActionError. That is a
-// DIFFERENT type from hcloud.Error, and its Code field is a plain string
-// rather than an hcloud.ErrorCode, so hcloud.IsError cannot see it. If the
-// classifier only understands hcloud.Error, every async stockout is
-// misclassified and the provider retries an unorderable server type.
+// Server creation is asynchronous: the placement decision fails later and
+// arrives as hcloud.ActionError, a DIFFERENT type from hcloud.Error whose Code
+// is a plain string rather than an hcloud.ErrorCode, so hcloud.IsError cannot
+// see it. A classifier that only understands hcloud.Error misclassifies every
+// async stockout and retries an unorderable server type.
 func TestClassifyActionError(t *testing.T) {
 	for _, code := range []string{
 		string(hcloud.ErrorCodeResourceUnavailable),
@@ -94,9 +90,9 @@ func TestClassifyActionError(t *testing.T) {
 				t.Errorf("Classify(ActionError{%s}) = %s, want capacity", code, got)
 			}
 
-			// Demonstrate why Code cannot be built on hcloud.IsError. If this
-			// ever starts returning true, hcloud-go has unified the two error
-			// types and the extra branch could be simplified.
+			// Why Code cannot be built on hcloud.IsError. If this ever starts
+			// returning true, hcloud-go has unified the two error types and
+			// the extra branch could be simplified.
 			if hcloud.IsError(err, hcloud.ErrorCode(code)) {
 				t.Errorf("hcloud.IsError now matches ActionError; revisit Code()")
 			}
@@ -152,8 +148,8 @@ func TestClassifyNonHetznerErrors(t *testing.T) {
 }
 
 // TestUnknownCodeIsTransient: a code Hetzner adds later must not be guessed as
-// capacity (which would suppress a healthy offering) or config (which would
-// fail a NodeClaim that might have succeeded).
+// capacity, which would suppress a healthy offering, or config, which would
+// fail a NodeClaim that might have succeeded.
 func TestUnknownCodeIsTransient(t *testing.T) {
 	err := hcloud.Error{Code: hcloud.ErrorCode("some_future_code")}
 

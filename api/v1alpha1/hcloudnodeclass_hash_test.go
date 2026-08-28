@@ -50,10 +50,10 @@ func fixture() *HCloudNodeClass {
 // TestHashStable pins the hash of a known spec.
 //
 // A failure here means the hash GENERATOR changed output for identical input,
-// which in production would mark every NodeClaim Drifted and roll the whole
-// fleet. That is sometimes intended (a new hashed field) and sometimes not (a
-// dependency bump changing traversal order). Either way it must be a
-// deliberate decision, so update this constant and bump HashVersion together.
+// which in production marks every NodeClaim Drifted and rolls the whole fleet.
+// That is sometimes intended (a new hashed field) and sometimes not (a
+// dependency bump changing traversal order), so update this constant and bump
+// HashVersion together.
 func TestHashStable(t *testing.T) {
 	const want = "15927006481853939636"
 	if got := fixture().Hash(); got != want {
@@ -76,10 +76,9 @@ func TestHashDeterministic(t *testing.T) {
 // TestHashIgnoresLiveDetectableFields asserts the hash:"ignore" contract.
 //
 // These fields are all readable back from a live Hetzner server, so drift
-// compares them directly against the server. Hashing them too would mean a
-// change rolls the fleet via drift AND is caught by comparison, and worse,
-// that resolving a selector to a new ID (which happens whenever Hetzner
-// rebuilds an image) silently replaces every node.
+// compares them directly against the server. Hashing them too would mean that
+// resolving a selector to a new ID, which happens whenever Hetzner rebuilds an
+// image, silently replaces every node.
 func TestHashIgnoresLiveDetectableFields(t *testing.T) {
 	base := fixture().Hash()
 

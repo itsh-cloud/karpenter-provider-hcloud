@@ -30,13 +30,11 @@ const (
 // ConfigMap is absent, the read is forbidden, or the embedded kubeconfig is
 // unusable.
 //
-// The distinction is load-bearing for the caller. A configuration failure has
-// to be published on the NodeClass, because nothing else names it. A transport
-// failure must NOT be, because reporting a blip as a configuration error takes
-// every NodeClass to Ready=False, which makes karpenter core stop provisioning
-// and delete in-flight NodeClaims over a rolling apiserver restart. The default
-// is therefore transient: anything not recognised here is retried rather than
-// published, which costs a slow diagnosis at worst.
+// The distinction is load-bearing. A configuration failure must be published on
+// the NodeClass because nothing else names it; a transport failure must NOT be,
+// since reporting a blip that way takes every NodeClass to Ready=False, and
+// core then stops provisioning and deletes in-flight NodeClaims over a rolling
+// apiserver restart. Anything unrecognised therefore defaults to transient.
 type ConfigError struct{ err error }
 
 // NewConfigError marks err as a permanent configuration failure.
@@ -64,16 +62,12 @@ func asConfigError(err error) error {
 // Discovery resolves the join endpoint and CA pins from the cluster itself,
 // at runtime.
 //
-// Reading them live rather than templating them in means there is no second
-// copy to drift: a CA rotation or an endpoint change is picked up on the next
-// refresh, and a stale value cannot be baked into a manifest where it fails
-// only at the point a node tries to join.
+// Reading them live rather than templating them in leaves no second copy to
+// drift: a CA rotation or endpoint change is picked up on the next refresh
+// instead of being baked into a manifest where it fails only at join time.
 type Discovery struct {
-	// A Reader rather than a Client, deliberately: the only sane RBAC grant
-	// for this is `get` on the single cluster-info ConfigMap in kube-public,
-	// and a cached client would need list+watch on ConfigMaps to build its
-	// informer, so it would wedge the whole manager waiting for a cache that
-	// can never sync. Callers pass an uncached reader.
+	// A Reader rather than a Client, deliberately, and it must be uncached.
+	// See NewDiscoveryFromManager.
 	client client.Reader
 
 	mu       sync.RWMutex
@@ -84,13 +78,12 @@ type Discovery struct {
 // NewDiscoveryFromManager returns a Discovery backed by the manager's direct
 // API reader. This is the constructor production code must use.
 //
-// It exists because the mistake it prevents is invisible. NewDiscovery takes a
-// client.Reader, which manager.GetClient() also satisfies, so passing the
-// cached client compiles cleanly. At runtime the delegating client lazily
-// starts a cluster-wide ConfigMap informer on first Get; the only sane RBAC for
-// this is `get` on one named ConfigMap, so the informer's list is denied, the
-// cache never syncs, and manager.Start blocks in WaitForCacheSync. The symptom
-// is a readyz failure that never mentions ConfigMaps.
+// It exists because the mistake it prevents is invisible: manager.GetClient()
+// also satisfies client.Reader, so passing the cached client compiles cleanly,
+// then lazily starts a cluster-wide ConfigMap informer. The only sane RBAC here
+// is `get` on one named ConfigMap, so that list is denied, the cache never
+// syncs, manager.Start blocks in WaitForCacheSync, and the symptom is a readyz
+// failure that never mentions ConfigMaps.
 func NewDiscoveryFromManager(m manager.Manager) *Discovery {
 	return &Discovery{client: m.GetAPIReader()}
 }
@@ -218,11 +211,10 @@ func hostPort(server string) (string, error) {
 
 // caCertHashes computes kubeadm's --discovery-token-ca-cert-hash values.
 //
-// The pin is over the SubjectPublicKeyInfo, NOT over the certificate, so it
-// survives the CA certificate being reissued for the same key. Computing it
-// with x509.MarshalPKIXPublicKey also keeps it algorithm-agnostic: the common
-// shell equivalent pipes through `openssl rsa`, which silently fails on an
-// ECDSA CA.
+// The pin is over the SubjectPublicKeyInfo, NOT the certificate, so it survives
+// the CA certificate being reissued for the same key. x509.MarshalPKIXPublicKey
+// also keeps it algorithm-agnostic, unlike the common shell equivalent piping
+// through `openssl rsa`, which silently fails on an ECDSA CA.
 func caCertHashes(caPEM []byte) ([]string, error) {
 	var hashes []string
 	rest := caPEM

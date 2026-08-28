@@ -18,15 +18,11 @@ const (
 	// exceeding it returns placement_error on create.
 	PlacementGroupMaxServers = 10
 
-	// PlacementGroupWarnServers is where the condition starts warning.
-	//
-	// Two members of headroom, because that is roughly what a rolling
-	// replacement needs: karpenter launches the replacement before terminating
-	// the node it replaces, so a group sitting at the cap cannot be rolled at
-	// all, and the failure it produces is placement_error, which this provider
-	// classifies as a capacity error and which is genuinely indistinguishable
-	// from a stockout. Nothing downstream can tell the operator what is wrong,
-	// so it has to be said here, before it happens.
+	// PlacementGroupWarnServers is where the condition starts warning. Two
+	// members of headroom, roughly what a rolling replacement needs: karpenter
+	// launches before terminating, so a group at the cap cannot be rolled at
+	// all, and the placement_error it produces is indistinguishable from a
+	// stockout. Nothing downstream can say so, hence the warning here.
 	PlacementGroupWarnServers = PlacementGroupMaxServers - 2
 )
 
@@ -70,16 +66,12 @@ func (p *PlacementGroup) Reconcile(ctx context.Context, nodeClass *v1alpha1.HClo
 		ServerCount: pg.ServerCount,
 	}
 
-	// The condition stays True at and beyond the cap rather than going False.
-	// False would take Ready to False, which makes karpenter core DELETE
-	// in-flight NodeClaims and stops the NodePool entirely, and the only way a
-	// full group empties is by those same nodes being removed. The warning is
-	// carried in the reason and message instead, which is what an operator
-	// alerts on and what `kubectl describe` shows.
-	//
-	// The exact count is in status.placementGroup.serverCount and deliberately
-	// not in the message: the message is bucketed so that the CONDITION does
-	// not rewrite itself on every node created or removed.
+	// True even at and beyond the cap: False would take Ready to False, making
+	// core DELETE in-flight NodeClaims and stopping the NodePool, and the only
+	// way a full group empties is by those same nodes going. The warning lives
+	// in the reason and message instead. The message is bucketed rather than
+	// carrying the exact count, which is in status.placementGroup.serverCount,
+	// so the condition does not rewrite itself on every node.
 	conds := nodeClass.StatusConditions(status.WithClock(p.clk))
 	switch {
 	case pg.ServerCount >= PlacementGroupMaxServers:

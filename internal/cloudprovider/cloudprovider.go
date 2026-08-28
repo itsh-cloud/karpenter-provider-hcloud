@@ -71,10 +71,9 @@ func (c *CloudProvider) Name() string { return Name }
 
 // GetSupportedNodeClasses returns a FRESH object each call.
 //
-// Not a package-level singleton, which is the trap here: karpenter's
-// pkg/utils/nodepool does client.Get INTO the object this returns, and the
-// readiness controller passes the same object to builder.Watches. A shared
-// value would be concurrently mutated by every NodePool readiness reconcile.
+// Never a package-level singleton: karpenter's pkg/utils/nodepool does
+// client.Get INTO the object this returns, so a shared value would be
+// concurrently mutated by every NodePool readiness reconcile.
 func (c *CloudProvider) GetSupportedNodeClasses() []status.Object {
 	return []status.Object{&v1alpha1.HCloudNodeClass{}}
 }
@@ -82,32 +81,23 @@ func (c *CloudProvider) GetSupportedNodeClasses() []status.Object {
 // RepairPolicies returns the node conditions karpenter should treat as
 // unhealthy enough to replace the machine.
 //
-// Declared, but INERT unless the NodeRepair feature gate is enabled: core only
-// registers the health controller when both this is non-empty and the gate is
-// on, and the gate is off by default. Declaring them now means enabling repair
-// later is one flag rather than a code change, and it puts the durations
-// somewhere reviewable instead of in an operator's head.
+// INERT unless the NodeRepair feature gate is on, which it is not by default.
 //
-// The durations are deliberately long. Node repair FORCE-terminates: it does
-// not respect a PodDisruptionBudget, because the premise is that the node is
-// already unusable. That makes a false positive expensive, and the common
-// causes of a node briefly reporting NotReady, a kubelet restart, a control
-// plane rollout, a network blip, all resolve well inside thirty minutes. Being
-// slow to repair a genuinely dead node costs one node's capacity; being quick
-// to repair a live one costs its workloads their disruption budget.
+// The durations are deliberately long, because node repair FORCE-terminates and
+// does not respect a PodDisruptionBudget, while a kubelet restart, a control
+// plane rollout or a network blip all resolve well inside thirty minutes.
 func (c *CloudProvider) RepairPolicies() []cloudprovider.RepairPolicy {
 	return []cloudprovider.RepairPolicy{
 		{
-			// The kubelet has stopped reporting. Thirty minutes is well past
-			// the five-minute mark at which the node controller has already
-			// tainted and evicted, so anything still here is not coming back.
+			// Well past the five minutes at which the node controller has
+			// already tainted and evicted.
 			ConditionType:      corev1.NodeReady,
 			ConditionStatus:    corev1.ConditionFalse,
 			TolerationDuration: 30 * time.Minute,
 		},
 		{
-			// Unknown means the kubelet is not talking to the API server at
-			// all, which is the shape a dead machine takes.
+			// The kubelet is not talking to the API server at all, which is
+			// the shape a dead machine takes.
 			ConditionType:      corev1.NodeReady,
 			ConditionStatus:    corev1.ConditionUnknown,
 			TolerationDuration: 30 * time.Minute,
@@ -128,10 +118,9 @@ func (c *CloudProvider) Create(ctx context.Context, nodeClaim *karpv1.NodeClaim)
 		return nil, err
 	}
 
-	// Rendering mints a bootstrap token, which is a live cluster-join
-	// credential written into a kube-system Secret. Doing it before there is
-	// anything worth attempting would mint one for a NodeClaim that cannot be
-	// satisfied at all, on every retry, so the check comes first.
+	// Rendering mints a bootstrap token, a live cluster-join credential written
+	// into a kube-system Secret, so the candidate check comes first: otherwise
+	// an unsatisfiable NodeClaim mints one on every retry.
 	if !c.instances.HasCandidates(nodeClaim, instanceTypes) {
 		return nil, cloudprovider.NewInsufficientCapacityError(
 			fmt.Errorf("no instance type in this NodeClaim's requirements is offered in any location nodeclass %q allows", nodeClass.Name))
@@ -184,9 +173,9 @@ func (c *CloudProvider) Get(ctx context.Context, providerID string) (*karpv1.Nod
 
 // List returns a NodeClaim for every server this cluster's provider owns.
 //
-// This is what karpenter's garbage collector compares against its NodeClaims,
-// so a server missing from here is one it will consider an orphan and delete,
-// and a server wrongly included is one it may adopt.
+// Karpenter's garbage collector compares this against its NodeClaims, so a
+// server missing from here is one it deletes as an orphan, and a server wrongly
+// included is one it may adopt.
 func (c *CloudProvider) List(ctx context.Context) ([]*karpv1.NodeClaim, error) {
 	servers, err := c.instances.List(ctx)
 	if err != nil {
@@ -203,7 +192,7 @@ func (c *CloudProvider) List(ctx context.Context) ([]*karpv1.NodeClaim, error) {
 //
 // The contract says every type regardless of availability: karpenter needs to
 // know a type exists in order to explain why a pod is unschedulable. Offerings
-// carry the availability, which is where the unavailability cache lands.
+// carry the availability.
 func (c *CloudProvider) GetInstanceTypes(ctx context.Context, nodePool *karpv1.NodePool) ([]*cloudprovider.InstanceType, error) {
 	nodeClass, err := c.nodeClassForNodePool(ctx, nodePool)
 	if err != nil {
@@ -269,23 +258,16 @@ func (c *CloudProvider) nodeClassForNodePool(ctx context.Context, nodePool *karp
 
 // toNodeClaim hydrates the NodeClaim karpenter gets back from Create.
 //
-// The labels here are what karpenter binds pods against before the node itself
-// exists, so a missing one is a pod that will not schedule onto a node that
-// could have held it.
+// Karpenter binds pods against these labels before the node itself exists, so a
+// missing one is a pod that will not schedule onto a node that could hold it.
 func (c *CloudProvider) toNodeClaim(srv *hcloudapi.Server, it *cloudprovider.InstanceType, in *karpv1.NodeClaim, nodeClass *v1alpha1.HCloudNodeClass) *karpv1.NodeClaim {
 	out := in.DeepCopy()
 
-	// The spec hash, stamped HERE and nowhere else on the launch path.
-	//
-	// Without it NodeClassDrift is dead code: the hash controller only writes
-	// this annotation onto NodeClaims during a version back-fill, which runs
-	// once and then never again, so no NodeClaim launched afterwards carries
-	// one and drift declines to judge forever. Everything the hash exists to
-	// cover, user data, ssh keys, kubelet config, bootstrap, would silently
-	// never drift a node.
-	//
-	// Core picks these up in PopulateNodeClaimDetails, which merges the
-	// annotations of the NodeClaim returned from Create onto the stored object.
+	// The spec hash, stamped HERE and nowhere else on the launch path. Without
+	// it NodeClassDrift is dead code: the hash controller only writes this
+	// annotation during a version back-fill, so nothing launched afterwards
+	// carries one and drift declines to judge forever. Core merges these onto
+	// the stored object in PopulateNodeClaimDetails.
 	if nodeClass != nil {
 		out.Annotations = lo.Assign(out.Annotations, map[string]string{
 			v1alpha1.AnnotationHash:        nodeClass.Hash(),
@@ -314,13 +296,10 @@ func (c *CloudProvider) toNodeClaim(srv *hcloudapi.Server, it *cloudprovider.Ins
 	out.Labels[corev1.LabelTopologyRegion] = srv.Location
 	out.Labels[v1alpha1.LabelCSILocation] = srv.Location
 	out.Labels[karpv1.CapacityTypeLabelKey] = karpv1.CapacityTypeOnDemand
-	// Set, and it agrees with the node by construction rather than by luck.
-	//
-	// hcloud-CCM derives this label from the LOCATION with a pure function and
-	// never reads the server's real datacenter, so the same input yields the
-	// same answer on both sides. Carrying it here means an in-flight NodeClaim
-	// can be priced and can satisfy a zone-constrained pod before its Node
-	// exists, instead of waiting for the CCM to catch up.
+	// Agrees with the node by construction: hcloud-CCM derives this label from
+	// the LOCATION with a pure function and never reads the real datacenter.
+	// Carrying it here lets an in-flight NodeClaim be priced and satisfy a
+	// zone-constrained pod before its Node exists.
 	out.Labels[corev1.LabelTopologyZone] = instancetype.LegacyDatacenterForLocation(srv.Location)
 
 	out.Status.ProviderID = srv.ProviderID()
@@ -331,8 +310,8 @@ func (c *CloudProvider) toNodeClaim(srv *hcloudapi.Server, it *cloudprovider.Ins
 // toNodeClaimFromServer builds a NodeClaim for Get and List, where there may be
 // no in-cluster NodeClaim to copy from.
 //
-// Capacity is looked up from the catalog rather than left empty: core's
-// garbage collector and its cost accounting both read it.
+// Capacity comes from the catalog rather than being left empty: core's garbage
+// collector and its cost accounting both read it.
 func (c *CloudProvider) toNodeClaimFromServer(srv *hcloudapi.Server) *karpv1.NodeClaim {
 	nc := &karpv1.NodeClaim{
 		ObjectMeta: metav1.ObjectMeta{
@@ -360,18 +339,11 @@ func (c *CloudProvider) toNodeClaimFromServer(srv *hcloudapi.Server) *karpv1.Nod
 // capacityFor returns a server type's capacity from the catalog, or nil when
 // the catalog cannot answer.
 //
-// It applies the SAME VM overhead correction instancetype.Capacity does, and
-// that consistency is the point rather than a detail. Create publishes
-// Status.Capacity from the instance type, which is corrected; if this returned
-// Hetzner's advertised figures instead, the same server would report roughly
-// 7% more memory through Get and List than it did through Create, and core's
-// cost accounting and its garbage collector both read this.
-//
-// Kubelet configuration is deliberately not consulted. Get and List are given a
-// server, not a NodeClass, so there is no way to know which kubelet block built
-// it; this uses the defaults, which is exact for every NodeClass that does not
-// override them and close for the rest. The precise per-NodeClass figure lives
-// on the Node itself, which is where anything needing exactness should read it.
+// It applies the SAME VM overhead correction instancetype.Capacity does, or Get
+// and List would report the same server as roughly 7% larger than Create did,
+// and core's cost accounting and its garbage collector both read this. Kubelet
+// configuration cannot be consulted (there is no NodeClass here), so this uses
+// the defaults; the exact per-NodeClass figure lives on the Node.
 func (c *CloudProvider) capacityFor(serverType string) corev1.ResourceList {
 	snapshot := c.catalog.Get()
 	if snapshot == nil {

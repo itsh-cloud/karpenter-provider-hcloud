@@ -48,11 +48,9 @@ type HCloudNodeClassStatus struct {
 	// +optional
 	APIServerEndpoint string `json:"apiServerEndpoint,omitempty"`
 
-	// CACertHashes are the CA public-key pins in use.
-	//
-	// Safe to publish: this is a public key pin, served anonymously from
-	// kube-public/cluster-info to any unauthenticated client. Surfacing it
-	// makes "is my join configuration right?" answerable with kubectl.
+	// CACertHashes are the CA public-key pins in use. Safe to publish: it is a
+	// public key pin, already served anonymously from kube-public/cluster-info
+	// to any unauthenticated client.
 	// +optional
 	CACertHashes []string `json:"caCertHashes,omitempty"`
 
@@ -96,9 +94,9 @@ type PlacementGroupStatus struct {
 	ID   int64  `json:"id"`
 	Name string `json:"name,omitempty"`
 	Type string `json:"type,omitempty"`
-	// ServerCount is the current membership. Hetzner caps spread groups at
-	// 10, and exceeding that returns placement_error on create, so this is
-	// surfaced to make the ceiling visible before it is hit.
+	// ServerCount is the current membership. Hetzner caps spread groups at 10
+	// and exceeding that returns placement_error on create, so the ceiling is
+	// surfaced before it is hit.
 	ServerCount int `json:"serverCount,omitempty"`
 }
 

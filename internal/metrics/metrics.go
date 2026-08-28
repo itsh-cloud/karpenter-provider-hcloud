@@ -1,17 +1,10 @@
-// Package metrics holds this provider's own Prometheus series.
+// Package metrics holds this provider's own Prometheus series: the Hetzner side
+// that karpenter core cannot see, since core covers scheduling and disruption.
 //
-// Karpenter core already exports the scheduling and disruption side. What core
-// cannot see is the Hetzner side: which (server type, location) pairs are
-// refusing to place, how long a launch took including its fall-through, and
-// whether the catalog is still being refreshed.
-//
-// Every series here has a writer. Request counts, in-flight depth and the
-// remaining rate limit would all be worth having and are deliberately NOT
-// declared yet: hcloud-go surfaces the limit on every Response and wiring it
-// needs a client wrapper. A gauge nothing writes scrapes as a permanent zero,
-// and for a rate limit zero is the reading for FULLY THROTTLED, so declaring it
-// early would put the worst possible value on the dashboard from process start
-// and page somebody for it.
+// Every series here has a writer, and that is the rule. A gauge nothing writes
+// scrapes as a permanent zero, and for a rate limit zero reads as FULLY
+// THROTTLED, so request counts, in-flight depth and the remaining rate limit
+// stay undeclared until something wires them.
 package metrics
 
 import (
@@ -27,11 +20,10 @@ const (
 )
 
 var (
-	// LaunchFailures counts creates that did not produce a server.
-	//
-	// The reason label carries this provider's error CLASS, not the raw Hetzner
-	// code, so a dashboard does not have to know Hetzner's vocabulary to show
-	// "capacity" separately from "config". The raw code is in the logs.
+	// LaunchFailures counts creates that did not produce a server. The reason
+	// label carries this provider's error CLASS, not the raw Hetzner code, so a
+	// dashboard need not know Hetzner's vocabulary to show "capacity" separately
+	// from "config". The raw code is in the logs.
 	LaunchFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace,
 		Subsystem: subsystem,
@@ -40,7 +32,6 @@ var (
 	}, []string{"server_type", "location", "reason"})
 
 	// LaunchDuration measures a whole Create, including the fall-through.
-	//
 	// Buckets reach past ninety seconds on purpose: a create that walks several
 	// out-of-stock candidates is the interesting case, and a histogram topping
 	// out below the action timeout would put every one of them in +Inf.
@@ -55,13 +46,9 @@ var (
 	// OfferingUnavailable is 1 while a (server type, location) pair is
 	// suppressed by an observed capacity failure.
 	//
-	// The label is LOCATION, not datacenter, which is a deliberate deviation
-	// from the name fixed in the plan. This provider orders by location and
-	// never by datacenter; Hetzner's datacenter API is deprecated and stops
-	// being returned after 2026-10-01, and the suppression cache is keyed by
-	// (type, location). A label called datacenter carrying a location would be
-	// wrong in a way that only misleads whoever reads the dashboard during an
-	// incident.
+	// The label is LOCATION, not datacenter: this provider orders by location,
+	// the suppression cache is keyed that way, and Hetzner's datacenter API is
+	// deprecated and stops being returned after 2026-10-01.
 	OfferingUnavailable = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace,
 		Subsystem: subsystem,
@@ -69,14 +56,12 @@ var (
 		Help:      "1 while a (server type, location) pair is suppressed after an observed capacity failure.",
 	}, []string{"server_type", "location", "code"})
 
-	// OfferingAvailabilityFlag is what Hetzner PUBLISHES about a pair.
-	//
-	// Exported precisely because nothing decides anything with it. Measured
-	// against the live API, the flag is neither sufficient nor necessary: types
-	// reported unavailable have been ordered successfully, and types reported
-	// available have returned resource_unavailable. Graphing it beside
-	// offering_unavailable makes the divergence between what Hetzner says and
-	// what Hetzner does visible, which is the only honest use for it.
+	// OfferingAvailabilityFlag is what Hetzner PUBLISHES about a pair, exported
+	// precisely because nothing decides anything with it. The flag is neither
+	// sufficient nor necessary: types reported unavailable have been ordered
+	// successfully, and types reported available have returned
+	// resource_unavailable. Graphing it beside offering_unavailable makes that
+	// divergence visible, which is the only honest use for it.
 	OfferingAvailabilityFlag = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace,
 		Subsystem: subsystem,
@@ -84,12 +69,10 @@ var (
 		Help:      "Hetzner's published availability flag for a (server type, location) pair. Advisory only; nothing gates on it.",
 	}, []string{"server_type", "location"})
 
-	// CatalogStale is 1 when the last catalog refresh failed.
-	//
-	// The snapshot is still served while stale, which is correct, and that is
-	// what makes this necessary: without it a token that quietly loses read on
-	// server types leaves the provider serving a boot-time catalog forever with
-	// every condition reading True.
+	// CatalogStale is 1 when the last catalog refresh failed. The snapshot is
+	// still served while stale, which is what makes this necessary: without it a
+	// token that quietly loses read on server types leaves the provider serving
+	// a boot-time catalog forever with every condition reading True.
 	CatalogStale = prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: namespace,
 		Subsystem: subsystem,
@@ -106,11 +89,9 @@ var (
 	})
 
 	// UnknownErrorCodes counts Hetzner error codes this provider does not
-	// recognise.
-	//
-	// Unrecognised codes are classified transient and retried, which is the
-	// safe default and also a silent one: a new terminal code would be retried
-	// forever with nothing saying so. This is how it becomes visible.
+	// recognise. They are classified transient and retried, which is the safe
+	// default and also a silent one: a new terminal code would be retried
+	// forever with nothing saying so.
 	UnknownErrorCodes = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace,
 		Subsystem: subsystem,
@@ -118,10 +99,9 @@ var (
 		Help:      "Hetzner error codes not recognised by the classifier, retried as transient.",
 	}, []string{"code"})
 
-	// OrphansReaped counts servers deleted for having no NodeClaim.
-	//
-	// Should be zero. A non-zero rate means creates are succeeding at Hetzner
-	// and failing to be recorded, which is worth an alert rather than a graph.
+	// OrphansReaped counts servers deleted for having no NodeClaim. Should be
+	// zero: a non-zero rate means creates are succeeding at Hetzner and failing
+	// to be recorded, which is worth an alert rather than a graph.
 	OrphansReaped = prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace: namespace,
 		Subsystem: subsystem,
@@ -131,9 +111,8 @@ var (
 )
 
 func init() {
-	// Registered into controller-runtime's registry, which is what the
-	// operator's /metrics endpoint serves. A separate registry would be
-	// collected by nothing.
+	// controller-runtime's registry is what the operator's /metrics endpoint
+	// serves. A separate registry would be collected by nothing.
 	crmetrics.Registry.MustRegister(
 		LaunchFailures,
 		LaunchDuration,

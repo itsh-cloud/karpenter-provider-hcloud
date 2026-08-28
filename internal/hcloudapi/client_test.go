@@ -12,8 +12,7 @@ const goodToken = "abcdefghij0123456789ABCDEFGHIJabcdefghij0123456789ABCDEFGHIJ0
 // Both checks exist so a malformed secret is named at STARTUP. Without them the
 // failure arrives as an hcloud-go error carrying no Hetzner error code, which
 // Classify treats as transient, so the provider retries forever with nothing on
-// any NodeClass saying why. The trailing-newline case is the one that actually
-// happens, from `echo` into a secret or an editor adding a final newline.
+// any NodeClass saying why. The trailing-newline case is the common one.
 func TestNewClientFromEnvValidatesTheToken(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -36,9 +35,8 @@ func TestNewClientFromEnvValidatesTheToken(t *testing.T) {
 				if err == nil {
 					t.Fatal("expected an error")
 				}
-				// The token is a credential. It must not reach an error string,
-				// which ends up in logs and, for other callers, on a NodeClass
-				// condition or a Kubernetes event.
+				// The token is a credential: it must not reach an error string,
+				// which ends up in logs and on NodeClass conditions.
 				if tc.token != "" && strings.Contains(err.Error(), strings.TrimSpace(tc.token)) {
 					t.Error("the error message contains the token")
 				}

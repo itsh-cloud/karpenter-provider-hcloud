@@ -2,28 +2,20 @@ package v1alpha1
 
 // OSFamily is the node operating system family.
 //
-// Single-valued today. The kubeadm join and containerd wiring are first-class
-// fields rather than an opaque userData blob, which is what makes
-// per-NodeClaim bootstrap tokens, correct taint rendering and a single source
-// of truth for kubelet reservations possible. The cost is that this provider
-// hard-codes Debian + apt + kubeadm + containerd. The enum exists so that
-// adding a family later is an additive change rather than a redesign.
-//
-// Anything beyond that baseline (extra runtimes, drivers, kernel modules) is
-// expressed through ExtraPackages, ExtraFiles (which cloud-init writes before
-// runcmd, so an apt source and its armored key land in time) and the
-// join hooks, and advertised to the scheduler with ordinary NodePool template
-// labels. The provider deliberately holds no opinion about it.
+// Single-valued today: first-class kubeadm and containerd fields, rather than
+// an opaque userData blob, are what allow per-NodeClaim bootstrap tokens,
+// correct taint rendering and one source of truth for kubelet reservations.
+// The cost is hard-coding Debian, apt, kubeadm and containerd. Anything else
+// goes through ExtraPackages, ExtraFiles (written before runcmd, so an apt
+// source and its key land in time) and the join hooks.
 //
 // +kubebuilder:validation:Enum=Debian
 type OSFamily string
 
 const OSFamilyDebian OSFamily = "Debian"
 
-// BootstrapMode selects how userData is produced.
-//
-// Single-valued today. A Custom mode taking a raw blob is the obvious future
-// addition, once the managed field set has settled.
+// BootstrapMode selects how userData is produced. Single-valued today; a
+// Custom mode taking a raw blob is the obvious future addition.
 //
 // +kubebuilder:validation:Enum=Managed
 type BootstrapMode string
@@ -40,11 +32,10 @@ type BootstrapSpec struct {
 	// +optional
 	Mode BootstrapMode `json:"mode,omitempty"`
 
-	// KubernetesVersion is the full version to install, e.g. "1.34.7".
-	//
-	// The apt repository stream is derived from its major.minor, and the
-	// pinned package version from the whole string plus PackageRevision.
-	// Changing this drifts the fleet, which is the supported upgrade path.
+	// KubernetesVersion is the full version to install, e.g. "1.34.7". The apt
+	// repository stream comes from its major.minor and the pinned package
+	// version from the whole string plus PackageRevision. Changing it drifts
+	// the fleet, which is the supported upgrade path.
 	//
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern=`^[0-9]+\.[0-9]+\.[0-9]+$`
@@ -58,20 +49,17 @@ type BootstrapSpec struct {
 	PackageRevision string `json:"packageRevision,omitempty"`
 
 	// APIServerEndpoint overrides the discovered join endpoint, as host:port.
-	//
-	// Normally left empty: the endpoint is read at runtime from the
-	// kube-public/cluster-info ConfigMap. Set it when cluster-info advertises
-	// an endpoint nodes should not use, such as a public address when nodes
-	// should join over the private network.
+	// Normally empty: it is read at runtime from kube-public/cluster-info. Set
+	// it when cluster-info advertises an endpoint nodes should not use, such as
+	// a public address where nodes should join over the private network.
 	//
 	// +optional
 	APIServerEndpoint string `json:"apiServerEndpoint,omitempty"`
 
 	// CACertHashes overrides the discovered CA public-key pins, in
-	// "sha256:<hex>" form.
-	//
-	// Normally left empty and computed at runtime from cluster-info as the
-	// SPKI hash, matching kubeadm's --discovery-token-ca-cert-hash.
+	// "sha256:<hex>" form. Normally empty and computed at runtime from
+	// cluster-info as the SPKI hash, matching kubeadm's
+	// --discovery-token-ca-cert-hash.
 	//
 	// +optional
 	// +kubebuilder:validation:items:Pattern=`^sha256:[a-f0-9]{64}$`
@@ -91,13 +79,11 @@ type BootstrapSpec struct {
 	// +optional
 	KernelModules []string `json:"kernelModules,omitempty"`
 
-	// PackageUpgradeOnBoot runs a full package upgrade during cloud-init.
-	//
-	// Exposed as a field because it is a real trade: it adds roughly one to
-	// four minutes to every boot and depends on external mirror speed, while
-	// Karpenter core's node registration timeout is a hardcoded 15 minutes. A
-	// slow mirror day with this enabled can produce a replacement loop. The
-	// durable fix is a prebuilt image; this is the lever until then.
+	// PackageUpgradeOnBoot runs a full package upgrade during cloud-init. It
+	// adds one to four minutes to every boot and depends on mirror speed,
+	// against karpenter core's hardcoded 15-minute registration timeout, so a
+	// slow mirror day can produce a replacement loop. The durable fix is a
+	// prebuilt image; this is the lever until then.
 	//
 	// +kubebuilder:default=true
 	// +optional
@@ -119,14 +105,11 @@ type BootstrapSpec struct {
 	// +optional
 	PostJoinCommands []string `json:"postJoinCommands,omitempty"`
 
-	// Revision is an arbitrary string with no effect other than being hashed.
-	//
-	// It is the deliberate "roll the fleet now" lever: bump it and every
-	// NodeClaim drifts, so Karpenter replaces each node one at a time inside
-	// the disruption budget and respecting PDBs. Because this provider does
-	// not use expireAfter (which is forceful and cannot be budget-gated),
-	// this is the primary mechanism for routine node recycling. Without such
-	// a field, operators resort to touching a real field to force a roll.
+	// Revision is an arbitrary string with no effect other than being hashed:
+	// the deliberate "roll the fleet now" lever. Bump it and every NodeClaim
+	// drifts, so Karpenter replaces nodes one at a time inside the disruption
+	// budget and respecting PDBs. This provider does not use expireAfter,
+	// which is forceful and cannot be budget-gated.
 	//
 	// +optional
 	Revision string `json:"revision,omitempty"`
@@ -140,24 +123,19 @@ type ContainerdSpec struct {
 	SystemdCgroup *bool `json:"systemdCgroup,omitempty"`
 
 	// AptPin constrains the containerd.io package version, as an apt version
-	// glob.
-	//
-	// The default holds containerd within its current major. Unattended
-	// upgrades should patch it, but must never cross a major boundary,
-	// because that changes the CRI plugin configuration shape and breaks the
-	// additional runtime handler wired into it.
+	// glob. The default holds containerd within its current major: unattended
+	// upgrades should patch it, but crossing a major changes the CRI plugin
+	// configuration shape and breaks the additional runtime handler wired into
+	// it.
 	//
 	// +kubebuilder:default="2.*"
 	// +optional
 	AptPin string `json:"aptPin,omitempty"`
 
 	// ExtraConfig is TOML appended to /etc/containerd/config.toml before
-	// containerd first starts.
-	//
-	// This is where additional runtime handlers go, for example registering a
-	// sandboxed runtime. Note that the CRI plugin's config path changed
-	// between containerd majors, so the stanza must match whatever AptPin
-	// selects.
+	// containerd first starts, which is where additional runtime handlers go.
+	// The CRI plugin's config path changed between containerd majors, so the
+	// stanza must match whatever AptPin selects.
 	//
 	// +optional
 	ExtraConfig string `json:"extraConfig,omitempty"`
@@ -170,8 +148,8 @@ type UnattendedUpgradesSpec struct {
 	// +optional
 	Enabled *bool `json:"enabled,omitempty"`
 
-	// ExtraOrigins are additional origin patterns to allow, e.g. entries for
-	// third-party repositories whose packages should also auto-patch.
+	// ExtraOrigins are additional origin patterns to allow, e.g. third-party
+	// repositories whose packages should also auto-patch.
 	// +optional
 	ExtraOrigins []string `json:"extraOrigins,omitempty"`
 

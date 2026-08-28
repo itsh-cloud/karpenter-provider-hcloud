@@ -1,7 +1,7 @@
 // Command karpenter-provider-hcloud runs the Karpenter cloud provider for
 // Hetzner Cloud.
 //
-// Provisioning, consolidation, drift handling and disruption all live in
+// Provisioning, consolidation, drift handling and disruption live in
 // sigs.k8s.io/karpenter core. This binary supplies the CloudProvider
 // implementation and the HCloudNodeClass controllers around it.
 package main
@@ -43,8 +43,7 @@ func main() {
 		}
 	}
 
-	// Read-only debug subcommands, for inspecting what the provider would do
-	// before it does it.
+	// Read-only debug subcommands.
 	if len(os.Args) > 1 {
 		if handled, err := runDebug(os.Args[1], os.Args[2:]); handled {
 			if err != nil {
@@ -73,11 +72,10 @@ func main() {
 
 	clusterName := os.Getenv(clusterNameEnvVar)
 	if clusterName == "" {
-		// Fatal, not defaulted. This value becomes the karpenter.sh/managed-by
-		// label on every server, and that label is the ownership check every
-		// destructive path gates on. Defaulting it would let two clusters
-		// sharing one Hetzner project delete each other's nodes, and would make
-		// "is this ours?" answerable by accident.
+		// Fatal, not defaulted. This becomes the karpenter.sh/managed-by label
+		// on every server, and that label is the ownership check every
+		// destructive path gates on: a default would let two clusters sharing
+		// one Hetzner project delete each other's nodes.
 		log.FromContext(ctx).Error(nil, "refusing to start", "reason", clusterNameEnvVar+" is not set")
 		os.Exit(1)
 	}
@@ -113,14 +111,9 @@ func main() {
 		op.GetClient(),
 		op.EventRecorder,
 		// operatorpkg's generic status controller wants the raw client-go
-		// recorder, which karpenter's deduplicating one does not implement.
-		//
-		// The deprecated call is unavoidable here, not an oversight.
-		// GetEventRecorder returns the newer events.EventRecorder, while
-		// operatorpkg's status.NewController takes a record.EventRecorder, so
-		// the migration is gated on operatorpkg rather than on us. Karpenter
-		// core carries the same suppression at pkg/operator/operator.go for
-		// the same reason.
+		// recorder, which karpenter's deduplicating one does not implement. The
+		// deprecated call is unavoidable: the migration is gated on operatorpkg
+		// taking record.EventRecorder. Core carries the same suppression.
 		op.GetEventRecorderFor("karpenter-provider-hcloud"), //nolint:staticcheck // SA1019: blocked on operatorpkg taking record.EventRecorder
 		hcloudapi.NewResources(hcloudClient),
 		catalogProvider,

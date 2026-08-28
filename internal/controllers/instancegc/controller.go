@@ -33,15 +33,10 @@ const (
 	interval = 2 * time.Minute
 
 	// minAge is how long a server must exist before it can be considered an
-	// orphan.
-	//
-	// This is the entire safety margin of the controller. A server is created
-	// BEFORE its NodeClaim records the providerID, so during that window a
-	// perfectly healthy new server legitimately has no NodeClaim pointing at
-	// it. Reaping inside that window would delete the node it was asked to
-	// build, repeatedly. Five minutes is comfortably beyond a create plus its
-	// action wait, and well under the point where a leaked server costs real
-	// money.
+	// orphan, and it is the controller's entire safety margin. A server is
+	// created BEFORE its NodeClaim records the providerID, so reaping inside
+	// that window would repeatedly delete the node it was asked to build. Five
+	// minutes is well beyond a create plus its action wait.
 	minAge = 5 * time.Minute
 )
 
@@ -53,20 +48,12 @@ type Provider interface {
 
 // Controller deletes servers whose NodeClaim is gone.
 //
-// # Why this has to exist
-//
-// Karpenter core ships the mirror of this and not this. Its
-// nodeclaim/garbagecollection controller deletes NODECLAIMS whose instance has
-// vanished, which is the leak in the other direction. Nothing in core deletes
-// an INSTANCE whose NodeClaim has vanished, because only the provider can
-// enumerate its own instances. Every provider ships its own; without it a
-// server can outlive the object that knows about it.
-//
-// The leak is not hypothetical. A create can succeed at Hetzner and then fail
-// to be recorded: the response is lost, the cleanup delete also fails, or the
-// process dies between the two. The server is running, it booted with a valid
-// join token so it will register as a Node, and it bills indefinitely with
-// nothing referring to it.
+// Core ships only the mirror of this: it reaps NODECLAIMS whose instance has
+// vanished, never instances whose NodeClaim has, because only a provider can
+// enumerate its own instances. The leak is reachable whenever a create succeeds
+// at Hetzner and fails to be recorded (lost response, failed cleanup delete,
+// process death between the two): the server runs, registers as a Node on its
+// valid join token, and bills with nothing referring to it.
 type Controller struct {
 	kubeClient  client.Client
 	provider    Provider
@@ -83,9 +70,9 @@ func (c *Controller) Reconcile(ctx context.Context) (reconciler.Result, error) {
 	ctx = injection.WithControllerName(ctx, ControllerName)
 
 	if c.clusterName == "" {
-		// Unreachable in a wired binary, which refuses to start without it.
-		// Checked anyway because the consequence of being wrong here is
-		// deleting servers this cluster does not own.
+		// Unreachable in a wired binary, which refuses to start without it,
+		// but the consequence of being wrong is deleting other people's
+		// servers.
 		return reconciler.Result{}, fmt.Errorf("cluster name is empty, refusing to garbage collect")
 	}
 
@@ -97,13 +84,9 @@ func (c *Controller) Reconcile(ctx context.Context) (reconciler.Result, error) {
 		return reconciler.Result{RequeueAfter: interval}, nil
 	}
 
-	// Every NodeClaim, not just those with a providerID.
-	//
-	// A NodeClaim that has been created but has not yet recorded its
-	// providerID is exactly the in-flight case this must not reap, so the set
-	// is keyed by NAME, which the server carries as a label from the moment it
-	// is created. Keying on providerID would leave a window where a launching
-	// NodeClaim looks like an orphan.
+	// Every NodeClaim, and keyed by NAME, which the server carries as a label
+	// from the moment it is created. Keying on providerID would leave a window
+	// where a NodeClaim that has not yet recorded one looks like an orphan.
 	nodeClaims := &karpv1.NodeClaimList{}
 	if err := c.kubeClient.List(ctx, nodeClaims); err != nil {
 		return reconciler.Result{}, fmt.Errorf("listing nodeclaims, %w", err)
@@ -113,15 +96,11 @@ func (c *Controller) Reconcile(ctx context.Context) (reconciler.Result, error) {
 		live.Insert(nodeClaims.Items[i].Name)
 	}
 
-	// No NodeClaims at all, but servers that say they belong to some, is not a
-	// fleet of orphans. It is what a lost list, a wiped CRD, or somebody's
+	// No NodeClaims at all, against servers that claim to have some, is not a
+	// fleet of orphans: it is what a lost list, a wiped CRD or a
 	// `kubectl delete nodeclaims --all` looks like from here, and acting on it
-	// deletes every node this cluster runs, undrained, in one pass.
-	//
-	// A genuine leak is one or a few servers against a populated list, which
-	// this still reaps on the next sweep two minutes later. Refusing the
-	// all-or-nothing shape costs that case nothing and takes the worst outcome
-	// off the table entirely.
+	// deletes every node this cluster runs, undrained, in one pass. A genuine
+	// leak is a few servers against a populated list, still reaped next sweep.
 	if len(live) == 0 {
 		log.FromContext(ctx).Info("refusing to garbage collect: there are no NodeClaims at all, "+
 			"which is indistinguishable from having lost them rather than from every server being an orphan",
@@ -135,9 +114,9 @@ func (c *Controller) Reconcile(ctx context.Context) (reconciler.Result, error) {
 		if claim == "" || live.Has(claim) {
 			continue
 		}
-		// A missing creation time reads as an age of ~2.5 million hours, which
-		// would reap instantly. Unknown age means "cannot judge", and on a path
-		// that deletes machines that has to resolve to leaving it alone.
+		// A missing creation time reads as an age of ~2.5 million hours and
+		// would reap instantly. On a path that deletes machines, an age that
+		// cannot be judged has to resolve to leaving the server alone.
 		if srv.Created.IsZero() {
 			log.FromContext(ctx).Info("skipping a server with no creation time; its age cannot be judged",
 				"server", srv.Name, "id", srv.ID)
@@ -160,9 +139,9 @@ func (c *Controller) Reconcile(ctx context.Context) (reconciler.Result, error) {
 			errs = append(errs, fmt.Errorf("deleting orphaned server %s, %w", srv.Name, err))
 			continue
 		}
-		// Counted only after the delete succeeded. Incrementing before it would
-		// re-count on every requeue of a delete that keeps failing, turning a
-		// stuck orphan into a rising rate that looks like many leaks.
+		// Counted only after the delete succeeded: incrementing before would
+		// re-count on every requeue of a failing delete, turning one stuck
+		// orphan into a rising rate that looks like many leaks.
 		metrics.OrphansReaped.Inc()
 	}
 	if len(errs) > 0 {

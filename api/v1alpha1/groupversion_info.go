@@ -23,10 +23,9 @@ const Group = "karpenter.itsh.dev"
 // it any more.
 //
 // Karpenter core adds no finalizer to a NodeClass and ships no NodeClass
-// termination controller; karpv1.TerminationFinalizer is for NodeClaims and
-// Nodes. Deleting a NodeClass out from under live NodeClaims is therefore
-// entirely a provider concern, and without this the objects those NodeClaims
-// point at simply vanish.
+// termination controller (karpv1.TerminationFinalizer is for NodeClaims and
+// Nodes), so keeping a NodeClass alive under live NodeClaims is entirely a
+// provider concern.
 const TerminationFinalizer = Group + "/termination"
 
 var (
@@ -44,13 +43,12 @@ func init() {
 	SchemeBuilder.Register(&HCloudNodeClass{}, &HCloudNodeClassList{})
 
 	// Registering into client-go's GLOBAL scheme is a second, separate
-	// registration, and it is not optional. operatorpkg's object.GVK resolves
+	// registration, and it is not optional: operatorpkg's object.GVK resolves
 	// through k8s.io/client-go/kubernetes/scheme with lo.Must, so an
 	// unregistered type PANICS rather than erroring, and karpenter core calls
-	// it on every element of CloudProvider.GetSupportedNodeClasses() while
-	// wiring its controllers, plus on every nodeclaimutils.ForNodeClass list.
-	// controller-runtime's manager also defaults its scheme to this one when
-	// the operator leaves Options.Scheme nil, which karpenter core does.
+	// it while wiring its controllers. controller-runtime's manager also
+	// defaults its scheme to this one when Options.Scheme is nil, which
+	// karpenter core leaves it.
 	metav1.AddToGroupVersion(clientgoscheme.Scheme, GroupVersion)
 	clientgoscheme.Scheme.AddKnownTypes(GroupVersion, &HCloudNodeClass{}, &HCloudNodeClassList{})
 }

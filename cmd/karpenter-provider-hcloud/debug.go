@@ -17,10 +17,8 @@ import (
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/providers/bootstrap"
 )
 
-// Read-only debug subcommands. They exist so that the parts of the provider
-// that are hardest to reason about, the discovered join parameters and the
-// rendered cloud-init, can be inspected and diffed before anything provisions
-// a node.
+// Read-only debug subcommands, so the discovered join parameters and the
+// rendered cloud-init can be inspected before anything provisions a node.
 func runDebug(cmd string, args []string) (bool, error) {
 	switch cmd {
 	case "discover":
@@ -68,17 +66,14 @@ func runDiscover() error {
 	return nil
 }
 
-// runRenderUserData prints the cloud-init a node would receive.
+// runRenderUserData prints the cloud-init a node would receive. With no
+// arguments it uses a minimal NodeClass and a placeholder token; given a
+// NodeClass YAML path it renders that instead.
 //
-// With no arguments it renders a minimal NodeClass and a placeholder token, so
-// the output is safe to paste into a diff. Given a NodeClass YAML path it
-// renders that instead.
-//
-// A real token is read from a FILE named by the second argument, never from the
-// argv itself: a bootstrap token admits a node to the cluster, and an argv is
-// readable by every process on the machine through /proc and lands in shell
-// history. The rendered output still contains it, so redirect it to a file
-// rather than letting it scroll.
+// A real token is read from a FILE named by the second argument, never from
+// argv: a bootstrap token admits a node to the cluster, and argv is readable
+// through /proc and lands in shell history. The output still contains it, so
+// redirect it to a file rather than letting it scroll.
 func runRenderUserData(args []string) error {
 	var nodeClassPath, tokenPath string
 	if len(args) > 0 {
@@ -96,7 +91,7 @@ func runRenderUserData(args []string) error {
 		token = strings.TrimSpace(string(raw))
 	}
 
-	endpoint, hashes := "10.1.0.2:6443", []string{"sha256:" + fmt.Sprintf("%064d", 0)}
+	endpoint, hashes := "127.0.0.1:6443", []string{"sha256:" + fmt.Sprintf("%064d", 0)}
 	if c, err := newReadOnlyClient(); err == nil {
 		d := bootstrap.NewDiscovery(c)
 		if err := d.Refresh(context.Background()); err == nil {

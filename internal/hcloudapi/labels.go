@@ -2,33 +2,26 @@ package hcloudapi
 
 import "fmt"
 
-// Labels this provider stamps on every server it creates.
-//
-// These are the entire basis for deciding what this controller owns, so they
-// are load-bearing rather than decorative. Hetzner label keys and values follow
-// Kubernetes label syntax, so these are valid as written.
+// Labels this provider stamps on every server it creates. These are the entire
+// basis for deciding what this controller owns. Hetzner label keys and values
+// follow Kubernetes label syntax, so these are valid as written.
 const (
-	// LabelManagedBy carries the cluster name and is the ownership check.
-	//
-	// Every destructive path filters on it. Control plane servers are created
-	// by terraform and genuinely do not carry it, which is what makes it a
-	// usable safety property rather than a formality: the blast radius of
-	// getting this wrong is deleting the control plane.
-	//
-	// The cluster name, not a constant, so two clusters sharing one Hetzner
-	// project cannot delete each other's nodes.
+	// LabelManagedBy carries the cluster name and is the ownership check. Every
+	// destructive path filters on it, and servers this provider did not create,
+	// control plane nodes included, genuinely do not carry it: the blast radius
+	// of getting it wrong is deleting the control plane. The cluster name
+	// rather than a constant, so two clusters sharing one Hetzner project
+	// cannot delete each other's nodes.
 	LabelManagedBy = "karpenter.sh/managed-by"
 
 	// LabelNodePool is the NodePool that asked for the server. Not used for
 	// ownership, only for attribution and for a human reading the console.
 	LabelNodePool = "karpenter.sh/nodepool"
 
-	// LabelNodeClaim is the NodeClaim the server belongs to.
-	//
-	// Server name equals NodeClaim name equals Node name, so this is
-	// redundant with the name today. It is stamped anyway because it survives
-	// a rename and because adoption after a lost create response matches on it
-	// rather than trusting the name alone.
+	// LabelNodeClaim is the NodeClaim the server belongs to. Redundant with
+	// the name today (server name equals NodeClaim name equals Node name), but
+	// stamped anyway because adoption after a lost create response matches on
+	// it rather than trusting the name alone.
 	LabelNodeClaim = "karpenter.itsh.dev/nodeclaim"
 )
 

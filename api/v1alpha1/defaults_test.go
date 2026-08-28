@@ -9,12 +9,9 @@ import (
 // TestAccessorsOnAbsentBlocks is the regression test for the reason
 // defaults.go exists.
 //
-// CRD defaulting only descends into structs PRESENT in the submitted object.
-// Verified against a live API server with a manifest omitting them:
-// `containerd` and `unattendedUpgrades` were entirely absent from the returned
-// object, while sibling scalars at a present level (osFamily, mode,
-// packageRevision, packageUpgradeOnBoot) were all defaulted.
-//
+// CRD defaulting only descends into structs PRESENT in the submitted object:
+// `containerd` and `unattendedUpgrades` come back entirely absent when a
+// manifest omits them, while sibling scalars at a present level are defaulted.
 // So a zero-valued spec must still yield safe answers. The containerd apt pin
 // is the sharpest case: absent it, nothing constrains the major, and crossing
 // one changes the CRI plugin config shape.
@@ -69,9 +66,8 @@ func TestExplicitFalseIsHonoured(t *testing.T) {
 
 // TestKubeletDefaultsMatchOverheadModel pins the reservation totals.
 //
-// These exact numbers are what Karpenter subtracts to compute allocatable.
-// Measured on live workers: capacity - allocatable is exactly 1524Mi of memory
-// (512 kube + 512 system + 500 eviction) and 400m of CPU (200 + 200). If these
+// These exact numbers are what Karpenter subtracts to compute allocatable:
+// 1024Mi reserved plus a 500Mi eviction threshold, and 400m of CPU. If they
 // drift from what the kubelet is actually given, Karpenter overpacks every
 // node by the difference and there is no alert for it.
 func TestKubeletDefaultsMatchOverheadModel(t *testing.T) {

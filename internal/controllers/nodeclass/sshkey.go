@@ -16,20 +16,12 @@ import (
 
 // SSHKeys resolves spec.sshKeySelectors into status.sshKeys.
 //
-// # Why a missing key does not stop provisioning
-//
-// Unlike every other selector here, this one fails OPEN when a key simply is
-// not there. Nothing about joining needs SSH: kubeadm joins over the network,
-// and the provider never opens a session. So a key that has been deleted from
-// the Hetzner project, typically because someone pruned a departed colleague,
-// costs an operator the ability to log in to nodes built afterwards. Failing
-// closed on it costs them every NodePool that uses the class, cluster-wide,
-// within one requeue, and turns an act of good hygiene into an outage.
-//
-// A rejected or read-only token still fails closed. That is not a statement
-// about SSH keys at all, it means nothing on this NodeClass can be trusted to
-// have resolved, and it is going to fail the other five conditions in the same
-// pass regardless.
+// Alone among the selectors, a missing key fails OPEN: nothing about joining
+// needs SSH, so a deleted key only costs the ability to log in to nodes built
+// afterwards, while failing closed would take every NodePool using the class out
+// of service within one requeue. A rejected or read-only token still fails
+// closed, because that says nothing about SSH keys, it means nothing on this
+// NodeClass can be trusted to have resolved.
 type SSHKeys struct {
 	clk       clock.Clock
 	recorder  events.Recorder
@@ -43,9 +35,8 @@ func NewSSHKeys(clk clock.Clock, recorder events.Recorder, resources hcloudapi.R
 
 func (s *SSHKeys) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNodeClass) (reconcile.Result, error) {
 	if len(nodeClass.Spec.SSHKeySelectors) == 0 {
-		// No keys is a supported configuration, not an incomplete one: joining
-		// is done by kubeadm over the network and the provider has no need for
-		// SSH. So True, not Unknown.
+		// No keys is a supported configuration, not an incomplete one, so True
+		// rather than Unknown.
 		nodeClass.Status.SSHKeys = nil
 		nodeClass.StatusConditions(status.WithClock(s.clk)).SetTrue(v1alpha1.ConditionTypeSSHKeysReady)
 		return reconcile.Result{RequeueAfter: resolvedRequeue}, nil
@@ -55,13 +46,10 @@ func (s *SSHKeys) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNodeC
 	var missing []string
 	var reason string
 	var cause error
-	// Accumulated across the whole loop rather than read off the last failure.
-	// Deciding fail-open versus fail-closed from a single overwritten variable
-	// makes the decision depend on ITERATION ORDER: one missing key and one
-	// rejected credential would fail closed or open according to which selector
-	// happened to be listed last, and in the open direction it publishes a
-	// partial key set as success while claiming the key no longer exists, when
-	// in fact the API refused to answer.
+	// Accumulated across the whole loop, not read off the last failure: a single
+	// overwritten variable makes fail-open versus fail-closed depend on
+	// ITERATION ORDER, and in the open direction it publishes a partial key set
+	// as success while blaming a key the API merely refused to answer for.
 	failClosed := false
 
 	for _, sel := range nodeClass.Spec.SSHKeySelectors {
@@ -99,14 +87,10 @@ func (s *SSHKeys) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNodeC
 
 	nodeClass.Status.SSHKeys = resolved
 	if len(missing) > 0 {
-		// True, with the loss stated three ways. It has to be loud: hcloud does
-		// not return ssh_keys on a server GET, so a node built with a reduced
-		// key set is not detectable from the API afterwards, and this condition
-		// is the only place the fact exists.
-		//
-		// Published on transition only, for the same reason as the location
-		// narrowing: this re-evaluates every five minutes and the recorder's
-		// dedupe window is two.
+		// True, and loud: hcloud does not return ssh_keys on a server GET, so a
+		// node built with a reduced key set is not detectable from the API
+		// afterwards and this condition is the only record of it. Published on
+		// transition only, for the same reason as the location narrowing.
 		message := fmt.Sprintf("continuing without sshKeySelectors %s, which no longer exist in the Hetzner project; "+
 			"nodes built from now on will not accept those keys", strings.Join(missing, ", "))
 		prev := conds.Get(v1alpha1.ConditionTypeSSHKeysReady)

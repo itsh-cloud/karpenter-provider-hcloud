@@ -20,7 +20,7 @@ import (
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/providers/instancetype"
 )
 
-const testCluster = "itsh-prod"
+const testCluster = "test-cluster"
 
 type fakeCatalog struct{ snapshot *catalog.Snapshot }
 
@@ -225,7 +225,7 @@ func TestListOnlyReturnsOwnedServers(t *testing.T) {
 // NodeClaim as a node karpenter may manage.
 func TestGetIsNotFoundForUnownedServers(t *testing.T) {
 	cp, servers := newTestProvider(t)
-	servers.byID[9] = &hcloudapi.Server{ID: 9, Name: "k8s-node-1"} // terraform-made, unlabelled
+	servers.byID[9] = &hcloudapi.Server{ID: 9, Name: "k8s-node-1"} // not ours, unlabelled
 
 	_, err := cp.Get(context.Background(), "hcloud://9")
 	if !cloudprovider.IsNodeClaimNotFoundError(err) {

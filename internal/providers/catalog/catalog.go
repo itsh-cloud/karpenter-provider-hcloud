@@ -19,19 +19,13 @@ import (
 const (
 	// DefaultRefreshInterval is how often the catalog is refetched.
 	//
-	// The availability flag is not consulted (see the instancetype package),
-	// so what this fetches is slow-moving: server types, their locations and
-	// their prices. Hetzner's rate limit is 3600 requests/hour PER PROJECT and
-	// is shared with the CCM and the CSI driver, so this is budget someone
-	// else also needs. Upstream cluster-autoscaler uses the same interval for
-	// its server-type cache.
+	// What this fetches is slow-moving (server types, locations, prices) and
+	// Hetzner's 3600 requests/hour limit is PER PROJECT, shared with the CCM
+	// and the CSI driver, so this is budget someone else also needs.
 	DefaultRefreshInterval = 10 * time.Minute
 
-	// DefaultJitter is added to each refresh as a random 0..jitter.
-	//
-	// The controller runs two replicas for leader election, and a fleet-wide
-	// restart would otherwise synchronise their refreshes forever. Same
-	// reasoning as cluster-autoscaler's 5-60s cache jitter.
+	// DefaultJitter is added to each refresh as a random 0..jitter, so that a
+	// fleet-wide restart does not synchronise replicas' refreshes forever.
 	DefaultJitter = 60 * time.Second
 )
 
@@ -62,18 +56,13 @@ type Provider struct {
 	snapshot   atomic.Pointer[Snapshot]
 
 	// stale reports whether the last refresh attempt failed. The snapshot is
-	// still served in that case: an API blip must never make Karpenter believe
-	// the cluster has zero instance types, which would look exactly like
-	// everything being unschedulable.
+	// still served in that case, see Get.
 	stale atomic.Bool
 
-	// refreshed is signalled after each successful refresh, so that controllers
-	// waiting on the catalog can be woken instead of polling for it.
-	//
-	// Buffered by one and written non-blocking: the signal means "look again",
-	// not "here is what changed", so coalescing several refreshes into one
-	// wake-up is correct and a reader that is not listening must never stall
-	// the refresh loop.
+	// refreshed wakes controllers waiting on the catalog instead of making them
+	// poll. Buffered by one and written non-blocking: the signal means "look
+	// again", not "here is what changed", so coalescing refreshes is correct
+	// and a reader that is not listening must never stall the refresh loop.
 	refreshed chan struct{}
 }
 
@@ -118,10 +107,8 @@ func (p *Provider) Stale() bool { return p.stale.Load() }
 
 // Refreshed yields a value after each successful refresh.
 //
-// This exists so that a controller which cannot proceed without the catalog can
-// WAIT rather than POLL. The difference is not cosmetic: a controller polling
-// for it re-runs its whole reconcile, and if that reconcile makes Hetzner calls
-// then the act of waiting for the catalog spends the very rate limit the
+// A controller that cannot proceed without the catalog must WAIT rather than
+// POLL: polling re-runs its whole reconcile, spending the very rate limit the
 // catalog needs to arrive, on every object, for as long as the outage lasts.
 func (p *Provider) Refreshed() <-chan struct{} { return p.refreshed }
 
@@ -153,15 +140,10 @@ func (p *Provider) Refresh(ctx context.Context) error {
 	p.stale.Store(false)
 	metrics.CatalogStale.Set(0)
 	metrics.CatalogLastSuccess.Set(float64(p.now().Unix()))
-	// Hetzner's PUBLISHED availability, exported and used for nothing. Graphed
-	// beside offering_unavailable it shows where what Hetzner says and what
-	// Hetzner does disagree, which is the only honest use for a flag that is
-	// neither sufficient nor necessary.
-	//
-	// Reset first, for the same reason the suppression gauge is rebuilt rather
-	// than updated: a server type or location that disappears from the Hetzner
-	// catalog would otherwise keep its last published value forever, which
-	// reads as a live offering long after it stopped being one.
+	// Hetzner's PUBLISHED availability, exported and used for nothing: graphed
+	// beside offering_unavailable it shows where what Hetzner says and what it
+	// does disagree. Reset first, or a server type or location that disappears
+	// from the catalog keeps its last published value forever.
 	metrics.OfferingAvailabilityFlag.Reset()
 	for _, st := range serverTypes {
 		for _, l := range st.Locations {
@@ -172,9 +154,8 @@ func (p *Provider) Refresh(ctx context.Context) error {
 	select {
 	case p.refreshed <- struct{}{}:
 	default:
-		// A wake-up is already pending and has not been consumed. Since the
-		// signal carries no payload, one pending wake-up covers this refresh
-		// too, and dropping it keeps the refresh loop non-blocking.
+		// A wake-up is already pending. The signal carries no payload, so one
+		// covers this refresh too and dropping it keeps the loop non-blocking.
 	}
 	return nil
 }
@@ -182,13 +163,10 @@ func (p *Provider) Refresh(ctx context.Context) error {
 // Start refreshes until ctx is cancelled. It performs one refresh immediately
 // so that a bad token is reported at startup rather than at the first scale-up.
 //
-// Only a FATAL first refresh is returned. Run as a manager Runnable, returning
-// any error fails the manager and restarts the pod, so treating a Hetzner
-// outage or a 429 as fatal would CrashLoopBackOff for the duration of the
-// outage and take down the controllers that need no Hetzner access at all. A
-// rejected token is different: it will not fix itself, every retry burns rate
-// limit shared with the CCM and the CSI driver, and failing loudly at startup
-// is how an operator finds out.
+// Only a FATAL first refresh is returned. This runs as a manager Runnable, so
+// any returned error restarts the pod: treating a Hetzner outage or a 429 as
+// fatal would CrashLoopBackOff for its duration and take down the controllers
+// needing no Hetzner access. A rejected token will not fix itself.
 func (p *Provider) Start(ctx context.Context) error {
 	if err := p.Refresh(ctx); err != nil {
 		if hcloudapi.Classify(err) == hcloudapi.ClassFatal {
@@ -202,11 +180,9 @@ func (p *Provider) Start(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(p.nextInterval()):
-			// A failure here is deliberately not returned: the loop keeps
-			// running and keeps serving the last good snapshot. It is logged,
-			// because the alternative is Get() serving a boot-time snapshot
-			// indefinitely, with every condition reading True, after a token
-			// silently loses read on server types.
+			// Not returned: the loop keeps serving the last good snapshot.
+			// Logged, or a token that silently loses read on server types
+			// leaves Get() serving a boot-time snapshot forever.
 			if err := p.Refresh(ctx); err != nil {
 				log.FromContext(ctx).Error(err, "catalog refresh failed, serving the last good snapshot",
 					"class", hcloudapi.Classify(err).String(), "staleFor", p.staleFor())
@@ -217,10 +193,8 @@ func (p *Provider) Start(ctx context.Context) error {
 
 // staleFor renders how long the served snapshot has been stale, for logging.
 //
-// "never" rather than an age when nothing has ever been fetched, which is the
-// common case here: the first refresh failing is the precondition for the loop
-// to log at all, and subtracting from the zero time prints a meaningless
-// 2562047h.
+// "never" rather than an age when nothing has ever been fetched, since
+// subtracting from the zero time prints a meaningless 2562047h.
 func (p *Provider) staleFor() string {
 	s := p.snapshot.Load()
 	if s == nil {

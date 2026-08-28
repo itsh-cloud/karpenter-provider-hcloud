@@ -53,8 +53,8 @@ func TestMintCreatesShortLivedToken(t *testing.T) {
 
 	data := secret.StringData
 
-	// The expiry is the entire point: the token this replaces had none at all,
-	// so it stayed valid forever and was readable from every node's userdata.
+	// The expiry is the entire point: a token without one stays valid forever
+	// and is readable from every node's userdata.
 	wantExpiry := now.Add(30 * time.Minute).UTC().Format(time.RFC3339)
 	if data["expiration"] != wantExpiry {
 		t.Errorf("expiration = %q, want %q", data["expiration"], wantExpiry)
@@ -68,10 +68,9 @@ func TestMintCreatesShortLivedToken(t *testing.T) {
 	if got := data["auth-extra-groups"]; got != "system:bootstrappers:kubeadm:default-node-token" {
 		t.Errorf("auth-extra-groups = %q", got)
 	}
-	// Must be true. Verified the hard way against a real cluster: with this
-	// false, kubeadm join fails at preflight with "could not find a JWS
-	// signature in the cluster-info ConfigMap for token ID". The CA pin and
-	// the JWS are not redundant, and no unit test catches this.
+	// Must be true. With it false, kubeadm join fails at preflight with "could
+	// not find a JWS signature in the cluster-info ConfigMap for token ID": the
+	// CA pin and the JWS are not redundant.
 	if got := data["usage-bootstrap-signing"]; got != "true" {
 		t.Errorf("usage-bootstrap-signing = %q, want true; kubeadm join fails at "+
 			"preflight without the JWS signature bootstrapsigner writes for this token", got)
@@ -81,12 +80,10 @@ func TestMintCreatesShortLivedToken(t *testing.T) {
 	}
 }
 
-// TestOwnerReferenceEnablesGarbageCollection.
-//
-// This is the primary revocation path. A namespaced Secret may reference a
-// cluster-scoped owner (only the reverse is forbidden), so the token dies with
-// the NodeClaim, including when registration fails and core deletes it. That
-// revokes EARLIER than the token's own expiry, which is the safe direction.
+// TestOwnerReferenceEnablesGarbageCollection covers the primary revocation
+// path. A namespaced Secret may reference a cluster-scoped owner (only the
+// reverse is forbidden), so the token dies with the NodeClaim, including when
+// registration fails, which revokes EARLIER than the token's own expiry.
 func TestOwnerReferenceEnablesGarbageCollection(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {

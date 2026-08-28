@@ -8,10 +8,10 @@ import (
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
 )
 
-// The types below are this provider's own view of the Hetzner catalog. They
-// exist so that only this package imports hcloud-go, which keeps the rest of
-// the provider testable without a fake HTTP server and makes an upstream API
-// change a one-package problem.
+// The types below are this provider's own view of the Hetzner catalog, so that
+// only this package imports hcloud-go: the rest of the provider stays testable
+// without a fake HTTP server, and an upstream API change is a one-package
+// problem.
 
 // Price is the net cost of one server type in one location.
 type Price struct {
@@ -37,19 +37,16 @@ type ServerType struct {
 	Deprecated   bool
 
 	// Prices is keyed by location name. A location absent here does not offer
-	// this type at all, which is a stronger statement than the availability
-	// flag and is the check worth making.
+	// this type at all, a stronger statement than the availability flag and
+	// the check worth making.
 	Prices map[string]Price
 
-	// Locations is where this type is offered, and is the successor to the
-	// deprecated Datacenter.ServerTypes listing.
-	//
-	// Note the granularity change: the old API reported per DATACENTER
-	// (nbg1-dc3), the new one reports per LOCATION (nbg1). That is why
-	// offerings constrain topology.kubernetes.io/region and leave zone free:
-	// we can no longer enumerate datacenters, and we do not need to, since
-	// servers are ordered by location and hcloud-CCM labels the node with
-	// whichever datacenter it landed in.
+	// Locations is where this type is offered, the successor to the deprecated
+	// Datacenter.ServerTypes listing. Note the granularity change: the old API
+	// reported per DATACENTER (nbg1-dc3), the new one per LOCATION (nbg1). That
+	// is why offerings constrain topology.kubernetes.io/region and leave zone
+	// free, hcloud-CCM labelling the node with whichever datacenter it landed
+	// in.
 	Locations []ServerTypeLocation
 }
 
@@ -58,17 +55,11 @@ type ServerTypeLocation struct {
 	Location    string
 	NetworkZone string
 
-	// Available is Hetzner's published stock hint.
-	//
-	// ADVISORY ONLY, and deliberately not used to gate provisioning. Measured
-	// against the live API on 2026-08-16, cx43 and cx53 were both reported
-	// available:false for nbg1 and ordering them there succeeded anyway
-	// (HTTP 201, create_server action reaching success), reproduced three
-	// times. It is not sufficient either: types reported available have
-	// returned resource_unavailable. Upstream cluster-autoscaler's Hetzner
-	// provider does not consult it at all.
-	//
-	// Gating on it would exclude exactly the cheap types worth returning to
+	// Available is Hetzner's published stock hint. ADVISORY ONLY, and
+	// deliberately not used to gate provisioning: it is neither necessary
+	// (types reported available:false have ordered successfully) nor
+	// sufficient (types reported available have returned resource_unavailable),
+	// and gating on it would exclude exactly the cheap types worth returning to
 	// after a stockout. Export it as a metric; decide nothing with it.
 	Available bool
 
@@ -95,8 +86,7 @@ func (s ServerType) Line() string {
 type Catalog interface {
 	ServerTypes(ctx context.Context) ([]ServerType, error)
 	// PrimaryIPv4MonthlyNet is billed separately from the server and is
-	// included in an offering's price when the NodeClass requests a public
-	// IPv4.
+	// included in an offering's price when the NodeClass requests one.
 	PrimaryIPv4MonthlyNet(ctx context.Context) (float64, error)
 }
 
@@ -106,11 +96,9 @@ type catalogClient struct{ c *hcloud.Client }
 // NewCatalog returns a Catalog backed by the given hcloud client.
 func NewCatalog(c *hcloud.Client) Catalog { return &catalogClient{c: c} }
 
-// networkZones maps location name to network zone.
-//
-// A server can only attach to a private network in its own network zone, so
-// this is a hard placement bound rather than a preference. One extra call per
-// catalog refresh, which is every ten minutes.
+// networkZones maps location name to network zone. A server can only attach to
+// a private network in its own zone, so this is a hard placement bound rather
+// than a preference. One extra call per catalog refresh.
 func (a *catalogClient) networkZones(ctx context.Context) (map[string]string, error) {
 	locs, err := a.c.Location.All(ctx)
 	if err != nil {
@@ -133,16 +121,11 @@ func (a *catalogClient) ServerTypes(ctx context.Context) ([]ServerType, error) {
 	}
 
 	// The network zone has to come from /v1/locations, and joining it in here
-	// is not an optimisation.
-	//
-	// The location objects embedded in /v1/server_types carry only id, name,
-	// recommended, available and the deprecation fields. network_zone is NOT
-	// among them, so hcloud-go materialises a *Location whose NetworkZone is
-	// the empty string. Reading it there yields "" for every location, which is
-	// silent: it produces an empty karpenter.itsh.dev/network-zone label on
-	// every node, and it makes the NodeClass zone check compare "" against the
-	// private network's real zone and conclude that every location on earth is
-	// outside it.
+	// is not an optimisation: the location objects embedded in
+	// /v1/server_types carry no network_zone, so hcloud-go materialises a
+	// *Location whose NetworkZone is "". Reading it there fails silently, with
+	// an empty network-zone label on every node and a NodeClass zone check that
+	// concludes every location is outside the private network's zone.
 	zones, err := a.networkZones(ctx)
 	if err != nil {
 		return nil, err
@@ -159,8 +142,7 @@ func (a *catalogClient) ServerTypes(ctx context.Context) ([]ServerType, error) {
 			monthly, err2 := strconv.ParseFloat(p.Monthly.Net, 64)
 			if err1 != nil || err2 != nil {
 				// A price we cannot parse must not silently become zero: a
-				// free-looking offering would win every comparison and the
-				// fleet would converge on it.
+				// free-looking offering would win every comparison.
 				continue
 			}
 			prices[p.Location.Name] = Price{HourlyNet: hourly, MonthlyNet: monthly}
@@ -216,7 +198,7 @@ func (a *catalogClient) PrimaryIPv4MonthlyNet(ctx context.Context) (float64, err
 			return v, nil
 		}
 	}
-	// Not fatal: a missing surcharge only makes offerings look marginally
-	// cheaper than they are, uniformly, so relative ordering is unaffected.
+	// Not fatal: a missing surcharge makes every offering look uniformly
+	// cheaper, so relative ordering is unaffected.
 	return 0, nil
 }

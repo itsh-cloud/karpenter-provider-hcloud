@@ -17,10 +17,9 @@ import (
 // HoursPerMonth is Hetzner's billing month, used to convert the monthly cap to
 // the hourly figure Karpenter compares offerings by.
 //
-// The monthly price is a CAP, not 730x the hourly rate: for a cx43 the hourly
-// rate times 730 comes to roughly EUR 19.9 against a EUR 15.99 cap, and the
-// ratio differs per SKU. Karpenter nodes are long-lived, so the capped monthly
-// figure is the honest basis; deriving from the hourly rate would systematically
+// The monthly price is a CAP rather than 730x the hourly rate, and the ratio
+// differs per SKU. Karpenter nodes are long-lived, so the capped monthly figure
+// is the honest basis; deriving from the hourly rate would systematically
 // over-price the larger types and distort consolidation decisions.
 const HoursPerMonth = 730
 
@@ -126,37 +125,25 @@ func newInstanceType(
 			Requirements: scheduling.NewRequirements(
 				scheduling.NewRequirement(karpv1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, karpv1.CapacityTypeOnDemand),
 				scheduling.NewRequirement(corev1.LabelTopologyRegion, corev1.NodeSelectorOpIn, l.Location),
-				// Zone, and it must be here.
-				//
-				// Karpenter prices a running node by looking up an offering
-				// whose zone equals the node's topology.kubernetes.io/zone
-				// label. With no zone requirement, Offering.Zone() reads a
-				// missing key, which yields a RANDOM number, so the lookup
-				// never matches, every candidate prices at 0, and consolidation
-				// can never find anything cheaper. That silently removes
-				// replacement consolidation, which is the capability this
-				// project exists to gain.
-				//
-				// The value is not a guess: hcloud-CCM derives the label from
-				// the location with a pure function and never reads the
-				// server's real datacenter, so ours agrees with the node's by
-				// construction. See LegacyDatacenterForLocation.
+				// Zone, and it must be here: Karpenter prices a running node by
+				// matching an offering against its topology.kubernetes.io/zone
+				// label, and an offering carrying no zone can never match, so
+				// every candidate prices at 0 and consolidation silently stops
+				// finding replacements. The value is derived, not guessed, see
+				// LegacyDatacenterForLocation.
 				scheduling.NewRequirement(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn,
 					LegacyDatacenterForLocation(l.Location)),
-				// Load-bearing. Karpenter core injects a bound PV's nodeAffinity
-				// keys as NodeClaim requirements, and Compatible() DENIES a
-				// custom label a NodePool leaves undefined. Without this on the
-				// offering, every pod with an existing hcloud volume is
-				// permanently unschedulable and nothing names Karpenter as the
-				// cause.
+				// Load-bearing. Core injects a bound PV's nodeAffinity keys as
+				// NodeClaim requirements and Compatible() DENIES a custom label
+				// a NodePool leaves undefined, so without this every pod with an
+				// existing hcloud volume is permanently unschedulable and
+				// nothing names Karpenter as the cause.
 				scheduling.NewRequirement(v1alpha1.LabelCSILocation, corev1.NodeSelectorOpIn, l.Location),
 				scheduling.NewRequirement(v1alpha1.LabelNetworkZone, corev1.NodeSelectorOpIn, l.NetworkZone),
 			),
 			Price: monthly / HoursPerMonth,
-			// Driven solely by observed failures. Hetzner's published
-			// availability flag is deliberately not consulted: it is neither
-			// sufficient nor necessary, and gating on it would exclude exactly
-			// the cheap types worth returning to after a stockout.
+			// Driven solely by observed failures, never by Hetzner's published
+			// availability flag. See Unavailable.
 			Available: !unavailable.Has(st.Name, l.Location),
 		})
 

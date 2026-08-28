@@ -27,18 +27,17 @@ func NewProvider(minter *TokenMinter, discovery *Discovery, clusterName string) 
 
 // Render mints a token and produces the cloud-init document for nodeClaim.
 //
-// The token is minted ONCE per NodeClaim rather than once per create attempt.
-// A NodeClaim that falls through several out-of-stock server types would
-// otherwise leave a live cluster-join credential behind for each attempt, all
-// of them valid until they expire, and all of them readable from the userdata
-// of whichever server did eventually boot.
+// The token is minted ONCE per NodeClaim, not once per create attempt: a
+// NodeClaim falling through several out-of-stock server types would otherwise
+// leave a live cluster-join credential behind for each attempt, every one of
+// them valid until it expires.
 func (p *Provider) Render(ctx context.Context, nodeClass *v1alpha1.HCloudNodeClass, nodeClaim *karpv1.NodeClaim) (string, error) {
 	endpoint, hashes := nodeClass.Status.APIServerEndpoint, nodeClass.Status.CACertHashes
 	if endpoint == "" || len(hashes) == 0 {
 		// Refused rather than rediscovered here. The NodeClass controllers own
-		// discovery and gate Ready on it, so an empty value means this
-		// NodeClaim is being launched against a class that never resolved, and
-		// booting it would produce a server that bills and never joins.
+		// discovery and gate Ready on it, so an empty value means launching
+		// against a class that never resolved: a server that bills and never
+		// joins.
 		return "", fmt.Errorf("nodeclass %q has no resolved join parameters", nodeClass.Name)
 	}
 
@@ -62,17 +61,15 @@ func (p *Provider) Render(ctx context.Context, nodeClass *v1alpha1.HCloudNodeCla
 
 // nodeLabels are the labels kubeadm stamps on the node at registration.
 //
-// Rendered per NodeClaim into nodeRegistration rather than applied afterwards:
-// karpenter's own syncNode merges labels only after the node has already
-// registered, so pods can land in the window before that, and binpacking
-// accounting is wrong for every one of them.
+// Rendered into nodeRegistration rather than applied afterwards: karpenter's
+// syncNode merges labels only once the node has registered, so pods can land in
+// the window before that with binpacking accounting wrong for every one.
 func nodeLabels(nodeClaim *karpv1.NodeClaim) map[string]string {
 	out := map[string]string{}
 	maps.Copy(out, nodeClaim.Labels)
-	// The nodepool label is not merely informational: karpenter matches a Node
-	// back to its NodeClaim through it, and a node without it is one core cannot
-	// account for. An empty value matches nothing, so it is dropped rather than
-	// registered as a label that looks present and is not.
+	// Karpenter matches a Node back to its NodeClaim through this label. An
+	// empty value matches nothing, so drop it rather than register a label that
+	// looks present and is not.
 	if out[karpv1.NodePoolLabelKey] == "" {
 		delete(out, karpv1.NodePoolLabelKey)
 	}
@@ -82,9 +79,8 @@ func nodeLabels(nodeClaim *karpv1.NodeClaim) map[string]string {
 // nodeTaints are the NodePool's own taints for this node.
 //
 // The karpenter.sh/unregistered taint is deliberately NOT added here: Render
-// adds it itself, and adding it twice would register the node with a duplicate
-// taint. Startup taints are included because a node must carry them from the
-// moment it registers, not from whenever a controller gets round to it.
+// adds it, and adding it twice registers a duplicate taint. Startup taints are
+// included because a node must carry them from the moment it registers.
 func nodeTaints(nodeClaim *karpv1.NodeClaim) []corev1.Taint {
 	return slices.Concat(nodeClaim.Spec.Taints, nodeClaim.Spec.StartupTaints)
 }

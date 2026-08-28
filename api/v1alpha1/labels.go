@@ -7,8 +7,8 @@ import (
 // Well-known label keys this provider sets on nodes and advertises on
 // InstanceType and Offering requirements.
 const (
-	// LabelServerTypeLine is the Hetzner product line: cx, cpx, ccx, cax.
-	// Lets a NodePool say `NotIn [cpx, ccx]` rather than enumerating SKUs.
+	// LabelServerTypeLine is the Hetzner product line: cx, cpx, ccx, cax. Lets
+	// a NodePool say `NotIn [cpx, ccx]` rather than enumerating SKUs.
 	LabelServerTypeLine = Group + "/server-type-line"
 
 	// LabelCPUType is "shared" or "dedicated", from ServerType.CPUType.
@@ -31,16 +31,13 @@ const (
 	LabelNetworkZone = Group + "/network-zone"
 
 	// LabelCSILocation is the topology key the Hetzner CSI driver writes onto
-	// nodes and onto every PV's nodeAffinity. It is NOT ours, but it must be
-	// registered as well-known and carried on every Offering.
-	//
-	// Karpenter core's VolumeTopology reads a bound PV's nodeAffinity and
-	// injects those keys as NodeClaim requirements. Requirements.Compatible()
-	// denies *custom* labels that a NodePool template leaves undefined, while
-	// allowing undefined *well-known* ones. So if this key is neither
-	// registered nor present on our offerings, every pod with an existing
-	// hcloud volume becomes permanently unschedulable, with nothing in the
-	// error pointing at Karpenter.
+	// nodes and onto every PV's nodeAffinity. Not ours, but it must be
+	// registered well-known and carried on every Offering: core's
+	// VolumeTopology injects a bound PV's nodeAffinity keys as NodeClaim
+	// requirements, and Requirements.Compatible() denies *custom* labels a
+	// NodePool template leaves undefined while allowing undefined *well-known*
+	// ones. Without this, every pod with an existing hcloud volume becomes
+	// permanently unschedulable, with nothing in the error naming Karpenter.
 	LabelCSILocation = "csi.hetzner.cloud/location"
 )
 
@@ -52,19 +49,15 @@ const (
 	ServerTypeLineCAX = "cax"
 )
 
-// wellKnownLabels are registered into karpenter core's WellKnownLabels set so
-// that a NodePool template which leaves them undefined does not cause
-// Compatible() to reject pods carrying them.
+// wellKnownLabels are registered into karpenter core's WellKnownLabels so that
+// a NodePool template leaving them undefined does not make Compatible() reject
+// pods carrying them.
 //
-// Add a key here ONLY if undefined-means-allowed is the behaviour you want.
-// The inverse matters just as much: a label used to steer workloads onto
-// dedicated nodes must stay *custom*, so that leaving it undefined on the
-// general NodePools DENIES those pods there. Registering such a label would
-// silently dissolve the isolation.
-//
-// Note these describe intrinsic properties of the machine Hetzner sold you.
-// Anything installed by the bootstrap is a property of the NodeClass, and is
-// advertised with an ordinary NodePool template label rather than from here.
+// Add a key here ONLY if undefined-means-allowed is what you want. A label used
+// to steer workloads onto dedicated nodes must stay *custom*, because leaving
+// it undefined on the general NodePools is what DENIES those pods there.
+// These keys are intrinsic properties of the machine; anything the bootstrap
+// installs is advertised with an ordinary NodePool template label instead.
 var wellKnownLabels = []string{
 	LabelServerTypeLine,
 	LabelCPUType,

@@ -10,44 +10,23 @@ import (
 // DefaultUnavailableTTL is how long an observed capacity failure suppresses a
 // (server type, location) pair.
 //
-// Longer than the three minutes some providers use, because Hetzner stockouts
-// last days rather than seconds, so a short TTL just spends one failed create
-// and one rate-limit slot per TTL to learn what we already knew. Not much
-// longer, because the second half of the requirement is noticing promptly when
-// stock returns: that is the whole point of the project.
+// Hetzner stockouts last days rather than seconds, so a shorter TTL just spends
+// a failed create and a rate-limit slot per TTL to relearn what we know. Not
+// longer, because noticing promptly when stock returns is the point.
 const DefaultUnavailableTTL = 5 * time.Minute
 
 // Unavailable records (server type, location) pairs that recently failed to
 // provision, so the next scheduling pass skips them instead of re-attempting
 // the same doomed combination.
 //
-// # Why this is the primary availability signal
-//
-// Hetzner publishes an availability flag per (server type, location), in
-// Location.ServerTypes.Available and ServerType.Locations[].Available. It is
-// tempting to gate provisioning on it. Do not. Measured against the live API,
-// that flag is neither sufficient nor necessary:
-//
-//   - Not sufficient. A type reported available can still fail to place. This
-//     is well attested operationally: repeated resource_unavailable responses
-//     for a type that the API continued to list as available.
-//
-//   - Not necessary. On 2026-08-16, cx43 and cx53 were both reported
-//     available:false for nbg1, in the locations listing and in the create
-//     response's own embedded server_type.locations. Ordering them in nbg1
-//     succeeded anyway: HTTP 201, create_server action reaching success, a
-//     running server. Reproduced three times across the two types.
-//
-// So the flag does not gate ordering, and treating it as a hard filter would
-// be actively harmful here: it would exclude exactly the cheap types we most
-// want to return to, keeping an expensive fallback node alive indefinitely
-// while the API quietly would have sold us the cheaper one. That is the
-// failure this provider exists to prevent, reintroduced by its own fix.
-//
-// The only trustworthy signal is a real failure, which is what this records.
-// The published flag is still worth exporting as a metric, because divergence
-// between "what Hetzner says" and "what Hetzner does" is interesting, but it
-// must not decide anything.
+// An observed failure is the ONLY availability signal used. Hetzner's published
+// flag (Location.ServerTypes.Available, ServerType.Locations[].Available) is
+// neither sufficient nor necessary: a type reported available can still fail to
+// place, and types reported unavailable have been ordered successfully. Gating
+// on it would be actively harmful, excluding exactly the cheap types worth
+// returning to after a stockout while an expensive fallback node stays alive.
+// The flag is still exported as a metric, since divergence between what Hetzner
+// says and what Hetzner does is interesting, but it must not decide anything.
 type Unavailable struct {
 	mu    sync.RWMutex
 	ttl   time.Duration
@@ -143,10 +122,9 @@ type Suppression struct {
 // Snapshot returns the pairs suppressed right now, reaping expired entries as
 // it goes.
 //
-// Exists so a metric can be SYNCED rather than only incremented. A gauge that
-// is set on failure and never cleared reads as a permanent stockout long after
-// stock returned, which is precisely the wrong thing to show an operator
-// deciding whether capacity has recovered.
+// Exists so a metric can be SYNCED rather than only incremented: a gauge set on
+// failure and never cleared reads as a permanent stockout long after stock
+// returned.
 func (u *Unavailable) Snapshot() []Suppression {
 	u.mu.Lock()
 	defer u.mu.Unlock()

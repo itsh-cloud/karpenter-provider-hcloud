@@ -38,12 +38,9 @@ import (
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/hcloudapi"
 )
 
-// conflictRequeue is the delay after losing an optimistic-lock race.
-//
-// A conflict is not an error: someone else wrote the object a moment ago, and
-// the fix is to re-read it. reconcile.Result.Requeue, which upstream uses for
-// this, is deprecated in controller-runtime, and requeueing with no delay at
-// all invites two controllers to spin against each other, so this waits a beat.
+// conflictRequeue is the delay after losing an optimistic-lock race. A conflict
+// only means someone else wrote the object, so the fix is to re-read it; the
+// short delay stops two controllers spinning against each other.
 const conflictRequeue = time.Second
 
 // ControllerName is how this controller identifies itself in logs and metrics.
@@ -51,18 +48,16 @@ const ControllerName = "nodeclass"
 
 // Controller resolves an HCloudNodeClass and reports the result in its status.
 //
-// The work is split into typed sub-reconcilers that mutate only the in-memory
-// object and never patch. The parent owns the one status write, so a pass that
-// resolves six things and fails the seventh persists all seven observations in
-// a single update instead of seven, and the Ready roll-up settles in one step
-// rather than converging over several reconciles.
+// Sub-reconcilers mutate only the in-memory object and never patch. The parent
+// owns the single status write, so one pass persists every observation at once
+// and the Ready roll-up settles in one step.
 type Controller struct {
 	kubeClient  client.Client
 	termination *Termination
 	reconcilers []reconcile.TypedReconciler[*v1alpha1.HCloudNodeClass]
 	// catalogRefreshed wakes every NodeClass when the server type catalog
-	// lands. Optional: nil simply means no wake-up, and the slow backstop
-	// requeue in validation still converges.
+	// lands. Optional: nil means no wake-up, and validation's slow backstop
+	// requeue still converges.
 	catalogRefreshed <-chan struct{}
 }
 
@@ -75,10 +70,9 @@ func NewController(
 	catalogProvider CatalogProvider,
 	discovery Discovery,
 ) *Controller {
-	// Guarded because the wake-up is an optimisation, not a dependency: the
-	// backstop requeue converges without it. Constructing a Controller must not
-	// panic on a partially wired provider, since that happens at operator
-	// startup where a panic is a CrashLoopBackOff with no useful message.
+	// The wake-up is an optimisation, not a dependency, and construction must
+	// not panic on a partially wired provider: that happens at operator startup,
+	// where a panic is a CrashLoopBackOff with no useful message.
 	var catalogRefreshed <-chan struct{}
 	if catalogProvider != nil {
 		catalogRefreshed = catalogProvider.Refreshed()
@@ -96,8 +90,8 @@ func NewController(
 			NewPlacementGroup(clk, resources),
 			NewBootstrapDiscovery(clk, discovery),
 			// Last, and the order is load-bearing: validation reports on the
-			// six conditions above and reads the network zone the network
-			// reconciler just resolved.
+			// six conditions above and reads the zone the network reconciler
+			// just resolved.
 			NewValidation(clk, recorder, catalogProvider),
 		},
 	}
@@ -113,10 +107,9 @@ func (c *Controller) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNo
 	if !controllerutil.ContainsFinalizer(nodeClass, v1alpha1.TerminationFinalizer) {
 		stored := nodeClass.DeepCopy()
 		controllerutil.AddFinalizer(nodeClass, v1alpha1.TerminationFinalizer)
-		// A separate patch from the status one below, and it has to be: this
-		// writes metadata, that writes the status subresource, and the two are
-		// different endpoints. MergeFromWithOptimisticLock because a JSON merge
-		// patch replaces the finalizer list wholesale.
+		// Separate from the status patch below, necessarily: metadata and the
+		// status subresource are different endpoints. Optimistic lock because a
+		// JSON merge patch replaces the finalizer list wholesale.
 		if err := c.kubeClient.Patch(ctx, nodeClass, client.MergeFromWithOptions(stored, client.MergeFromWithOptimisticLock{})); client.IgnoreNotFound(err) != nil {
 			if apierrors.IsConflict(err) {
 				return reconcile.Result{RequeueAfter: conflictRequeue}, nil
@@ -125,22 +118,20 @@ func (c *Controller) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNo
 		}
 	}
 
-	// Snapshotted here, AFTER the finalizer patch and BEFORE any sub-reconciler
-	// runs. The order matters in both directions. After the finalizer patch, so
-	// the metadata change is not re-sent as part of the status patch. Before the
-	// first StatusConditions() call, because that call is a constructor rather
-	// than an accessor: it initialises every absent condition to Unknown in
-	// memory, and a snapshot taken afterwards would hide that initialisation
-	// from the diff guard below, leaving the object with no conditions at all.
+	// Snapshotted AFTER the finalizer patch, so that metadata change is not
+	// re-sent in the status patch, and BEFORE the first StatusConditions() call,
+	// which is a constructor: it initialises absent conditions to Unknown in
+	// memory, and a later snapshot would hide that from the diff guard below,
+	// leaving the object with no conditions at all.
 	stored := nodeClass.DeepCopy()
 
 	var results []reconcile.Result
 	var errs error
 	for _, reconciler := range c.reconcilers {
-		// Every sub-reconciler runs on every pass, including after one has
-		// failed. Skipping the rest would leave their conditions carrying a
-		// stale observedGeneration, which the roll-up counts as unhealthy, so
-		// Ready would be pinned Unknown even once the failure cleared.
+		// Every sub-reconciler runs on every pass, even after one fails.
+		// Skipping the rest leaves a stale observedGeneration on their
+		// conditions, which the roll-up counts as unhealthy, pinning Ready at
+		// Unknown even once the failure clears.
 		res, err := reconciler.Reconcile(ctx, nodeClass)
 		errs = multierr.Append(errs, err)
 		results = append(results, res)
@@ -148,11 +139,9 @@ func (c *Controller) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNo
 
 	if !equality.Semantic.DeepEqual(stored, nodeClass) {
 		if err := c.kubeClient.Status().Patch(ctx, nodeClass, client.MergeFromWithOptions(stored, client.MergeFromWithOptimisticLock{})); err != nil {
-			// The conflict short-circuit is taken only when nothing else went
-			// wrong. Returning it while errs is non-empty discards a coincident
-			// Hetzner failure entirely: never logged, never counted in
-			// controller_runtime_reconcile_errors_total, and invisible because
-			// the pass looks like it succeeded.
+			// Short-circuit only when nothing else went wrong. Taking it with
+			// errs non-empty discards a coincident Hetzner failure entirely,
+			// unlogged and uncounted, because the pass then looks successful.
 			if apierrors.IsConflict(err) && errs == nil {
 				return reconcile.Result{RequeueAfter: conflictRequeue}, nil
 			}
@@ -167,23 +156,14 @@ func (c *Controller) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNo
 
 // rateLimiter paces retries after a failed pass.
 //
-// Deliberately NOT operatorpkg's reasonable.RateLimiter, which starts at 100ms.
-// One pass here is five uncached Hetzner GETs for a typical NodeClass and up to
-// eighteen at the CRD's limits (five firewalls plus ten ssh keys), so a 100ms
-// base means a single failing NodeClass issues ten passes inside the first
-// hundred seconds of an outage, and the accompanying 10qps/burst-100 token
-// bucket lets ten NodeClasses do that at once. Against a 3600/hour per-project
-// limit shared with the CCM and the CSI driver, that makes being rate limited
-// cause more requests than being healthy, since rate_limit_exceeded is
-// classified transient and therefore retried.
+// Deliberately NOT operatorpkg's reasonable.RateLimiter, whose 100ms base is an
+// amplifier here: one pass is five to eighteen uncached Hetzner GETs, against a
+// 3600/hour per-project limit shared with the CCM and the CSI driver, and
+// rate_limit_exceeded classifies transient and is retried. Five seconds to two
+// minutes removes that and costs a few seconds on a genuine blip.
 //
-// Five seconds to two minutes costs a few seconds of extra latency on a genuine
-// blip and removes the amplifier.
-//
-// Note that this governs the ERROR path only. A reconcile that returns a
-// RequeueAfter with a nil error goes through Queue.Forget and AddAfter, which
-// consult neither the limiter nor the bucket, so a short RequeueAfter is
-// throttled by nothing at all and has to be chosen on its own merits.
+// ERROR path only: a RequeueAfter with a nil error goes through Queue.Forget and
+// AddAfter, which consult neither the limiter nor the bucket.
 func rateLimiter() workqueue.TypedRateLimiter[reconcile.Request] {
 	return workqueue.NewTypedMaxOfRateLimiter[reconcile.Request](
 		workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](5*time.Second, 2*time.Minute),
@@ -203,20 +183,18 @@ func (c *Controller) Register(ctx context.Context, m manager.Manager) error {
 				if !ok || nc.Spec.NodeClassRef == nil {
 					return nil
 				}
-				// Group and Kind are matched, not just the name. Another
-				// provider's NodeClass may share a name, and enqueueing on it
-				// would spend a full seven-GET resolve on an object that has
-				// nothing to do with this NodeClaim.
+				// Group and Kind, not just the name: another provider's
+				// NodeClass may share a name, and enqueueing on it spends a
+				// full seven-GET resolve for nothing.
 				ref := nc.Spec.NodeClassRef
 				if ref.Group != v1alpha1.Group || ref.Kind != "HCloudNodeClass" {
 					return nil
 				}
-				// The watch exists for exactly one purpose: releasing the
-				// finalizer the moment the last NodeClaim goes away, instead of
-				// waiting out the ten-minute requeue. On a class that is not
-				// terminating there is nothing to release, and the enqueue would
-				// buy a full resolve for nothing. This read is served from the
-				// informer cache, so the check is free and the resolve is not.
+				// The watch exists only to release the finalizer as soon as the
+				// last NodeClaim goes, instead of waiting out the ten-minute
+				// requeue. On a class that is not terminating the enqueue buys a
+				// full resolve for nothing, and this read is served from the
+				// informer cache.
 				key := types.NamespacedName{Name: ref.Name}
 				nodeClass := &v1alpha1.HCloudNodeClass{}
 				if err := m.GetClient().Get(ctx, key, nodeClass); err != nil || nodeClass.GetDeletionTimestamp().IsZero() {
@@ -224,15 +202,12 @@ func (c *Controller) Register(ctx context.Context, m manager.Manager) error {
 				}
 				return []reconcile.Request{{NamespacedName: key}}
 			}),
-			// Deletes only. Creates and updates are noise: a NodeClaim changing
-			// says nothing about whether its class resolves.
-			//
-			// The cost is that status.placementGroup.serverCount, which grows
-			// on NodeClaim CREATE, refreshes only on the five-minute requeue,
-			// so the near-capacity warning can arrive up to that late. Accepted
-			// deliberately: watching creates would spend seven Hetzner GETs per
-			// node launched, on every class, to make one advisory condition
-			// timelier, and placement groups are opt-in and unset by default.
+			// Deletes only: a NodeClaim changing says nothing about whether its
+			// class resolves. The cost is that
+			// status.placementGroup.serverCount refreshes only on the
+			// five-minute requeue, so the near-capacity warning can lag by that
+			// much. Cheaper than seven Hetzner GETs per node launched, on every
+			// class, for one advisory condition on an opt-in field.
 			builder.WithPredicates(predicate.Funcs{
 				CreateFunc:  func(event.CreateEvent) bool { return false },
 				UpdateFunc:  func(event.UpdateEvent) bool { return false },
@@ -245,11 +220,10 @@ func (c *Controller) Register(ctx context.Context, m manager.Manager) error {
 			MaxConcurrentReconciles: 10,
 		})
 
-	// Waking on the catalog rather than polling for it. Validation cannot
-	// succeed without the server type catalog, and the catalog is refreshed by
-	// a Runnable inside this same process, so there is nothing to poll: a
-	// landing snapshot enqueues the NodeClasses waiting on it, and the requeue
-	// in that branch stays a slow backstop.
+	// Waking on the catalog rather than polling it. Validation cannot succeed
+	// without the server type catalog, and the catalog is refreshed by a
+	// Runnable in this same process, so a landing snapshot enqueues the
+	// NodeClasses waiting on it and the requeue stays a slow backstop.
 	if c.catalogRefreshed != nil {
 		events := make(chan event.GenericEvent)
 		go pumpRefreshSignal(ctx, c.catalogRefreshed, events)
@@ -261,11 +235,10 @@ func (c *Controller) Register(ctx context.Context, m manager.Manager) error {
 
 // pumpRefreshSignal forwards catalog wake-ups onto the watch channel.
 //
-// A goroutine rather than handing the catalog's channel straight to
-// source.Channel, because the two have different types and, more importantly,
-// different blocking contracts: the catalog's send is non-blocking so a refresh
-// is never delayed by a listener, while source.Channel's reader does not start
-// until the manager does. Parking here absorbs that gap.
+// Not the catalog's channel handed straight to source.Channel: the catalog's
+// send is non-blocking, so a refresh is never delayed by a listener, while
+// source.Channel's reader does not start until the manager does. Parking here
+// absorbs that gap.
 func pumpRefreshSignal(ctx context.Context, src <-chan struct{}, dst chan<- event.GenericEvent) {
 	for {
 		select {
@@ -281,17 +254,12 @@ func pumpRefreshSignal(ctx context.Context, src <-chan struct{}, dst chan<- even
 	}
 }
 
-// enqueueCatalogWaiters returns a map func enqueueing the NodeClasses that are
-// actually blocked on the catalog.
+// enqueueCatalogWaiters returns a map func enqueueing only the NodeClasses
+// blocked on the catalog.
 //
-// Filtered rather than fanning out to everything, because the signal carries no
-// object and the catalog refreshes roughly six times an hour. Waking every class
-// would add a full pass, five Hetzner GETs each, on top of the twelve an hour a
-// healthy class already does, for no benefit: a class that is already Ready
-// re-validates within resolvedRequeue anyway and re-running it early changes
-// nothing. Only a class parked on CatalogNotFetched or CatalogEmpty gains
-// anything from being told the catalog landed, so in the steady state this
-// costs nothing at all.
+// The signal carries no object and the catalog refreshes roughly six times an
+// hour, so fanning out would cost every class a full five-GET pass for nothing:
+// a class that is already Ready re-validates on its own requeue regardless.
 func enqueueCatalogWaiters(c client.Reader) handler.MapFunc {
 	return func(ctx context.Context, _ client.Object) []reconcile.Request {
 		list := &v1alpha1.HCloudNodeClassList{}
@@ -311,11 +279,9 @@ func enqueueCatalogWaiters(c client.Reader) handler.MapFunc {
 
 // waitingOnCatalog reports whether this NodeClass is parked on the catalog.
 //
-// Read WithObservedOnly: StatusConditions is a constructor, so the plain form
-// would fabricate every absent condition as Unknown on the in-memory copy. That
-// happens to give the right answer for a brand new class, which genuinely is
-// waiting, but it would arrive there by accident rather than by reading what is
-// on the object.
+// WithObservedOnly because StatusConditions is a constructor: the plain form
+// fabricates every absent condition as Unknown on the in-memory copy, which
+// would answer from what it just invented rather than from the object.
 func waitingOnCatalog(nodeClass *v1alpha1.HCloudNodeClass) bool {
 	cond := nodeClass.StatusConditions(status.WithObservedOnly()).Get(v1alpha1.ConditionTypeValidationSucceeded)
 	if cond == nil {

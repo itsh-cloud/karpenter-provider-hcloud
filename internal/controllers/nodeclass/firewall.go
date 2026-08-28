@@ -45,15 +45,11 @@ func (f *Firewalls) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNod
 				return reconcile.Result{}, fmt.Errorf("resolving firewall, %w", err)
 			}
 			// Collected rather than returned on the first failure, so one pass
-			// names every broken selector. Spec order is the iteration order,
-			// so the message is byte-identical between identical reconciles.
-			//
-			// The most severe cause is kept, not the most recent: a rejected
-			// credential alongside a genuinely missing firewall would otherwise
-			// be reported as merely missing, depending on which was listed
-			// last, and the operator would go looking for a deleted firewall
-			// instead of a dead token. This path fails closed either way, so
-			// unlike the ssh key equivalent only the message is at stake.
+			// names every broken selector, in spec order for a stable message.
+			// The most severe cause is kept, not the most recent, or a rejected
+			// credential alongside a missing firewall reports as merely missing
+			// and sends the operator hunting a deleted firewall instead of a
+			// dead token. This path fails closed either way.
 			if reason == "" || (r != reasonNotFound && reason == reasonNotFound) {
 				reason, cause = r, err
 			}
@@ -64,13 +60,11 @@ func (f *Firewalls) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNod
 	}
 
 	if len(missing) > 0 {
-		// Fails closed: a partially resolved firewall set is published as no
-		// set at all, because launching with a subset of the intended firewalls
-		// silently opens whatever the missing one was there to close.
-		//
-		// The underlying error is carried into the message, without which a
-		// missing firewall and a rejected token produce byte-identical text
-		// under two reasons that differ only by a suffix.
+		// Fails closed: a partially resolved set is published as no set at all,
+		// because launching with a subset of the intended firewalls silently
+		// opens whatever the missing one was there to close. The underlying
+		// error goes into the message, without which a missing firewall and a
+		// rejected token read identically.
 		nodeClass.Status.Firewalls = nil
 		nodeClass.StatusConditions(status.WithClock(f.clk)).SetFalse(
 			v1alpha1.ConditionTypeFirewallsReady, "Firewall"+reason,

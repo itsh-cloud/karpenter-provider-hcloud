@@ -47,18 +47,16 @@ type (
 		Type string
 		// ServerCount is current membership. Hetzner caps spread groups at 10
 		// and the next create then fails with placement_error, which is
-		// indistinguishable from a stockout and cannot be worked around by
-		// choosing a different server type. Surfaced so the ceiling is visible
-		// before it is hit.
+		// indistinguishable from a stockout. Surfaced so the ceiling is
+		// visible before it is hit.
 		ServerCount int
 	}
 )
 
-// NotFoundError reports a selector that resolved to nothing.
-//
-// Distinguished from a transport error because the reactions differ: a missing
-// resource is a configuration problem to surface on the NodeClass, while a
-// failed call should simply be retried.
+// NotFoundError reports a selector that resolved to nothing. Distinguished
+// from a transport error because the reactions differ: a missing resource is a
+// configuration problem to surface on the NodeClass, while a failed call
+// should simply be retried.
 type NotFoundError struct {
 	Kind     string
 	Selector string
@@ -83,13 +81,10 @@ type resourceClient struct{ c *hcloud.Client }
 func NewResources(c *hcloud.Client) Resources { return &resourceClient{c: c} }
 
 // lookup resolves one name-or-id selector through a resource's pair of hcloud
-// getters.
-//
-// Written once and shared because hcloud-go reports a miss as (nil, nil, nil),
-// which every caller has to translate into a NotFoundError: the sub-reconcilers
-// key the whole transient-versus-configuration split off that type, so a kind
-// that forgot the translation would retry a missing resource forever instead of
-// reporting it on the NodeClass.
+// getters. Shared because hcloud-go reports a miss as (nil, nil, nil), which
+// has to become a NotFoundError: the sub-reconcilers key the
+// transient-versus-configuration split off that type, so a kind that forgot
+// would retry a missing resource forever instead of reporting it.
 func lookup[T any](
 	ctx context.Context,
 	kind, name string,
@@ -124,8 +119,8 @@ func (r *resourceClient) Image(ctx context.Context, name string, id *int64, arch
 		hcloudArch = hcloud.ArchitectureARM
 	}
 	// Name lookups must be architecture-qualified: the same image name exists
-	// per architecture with different IDs, and picking the wrong one produces a
-	// server that cannot boot.
+	// per architecture with different IDs, and the wrong one produces a server
+	// that cannot boot.
 	byName := func(ctx context.Context, name string) (*hcloud.Image, *hcloud.Response, error) {
 		return r.c.Image.GetByNameAndArchitecture(ctx, name, hcloudArch)
 	}
@@ -151,8 +146,8 @@ func (r *resourceClient) Network(ctx context.Context, name string, id *int64) (*
 	if n.IPRange != nil {
 		out.IPRange = n.IPRange.String()
 	}
-	// A network's zone bounds which locations can attach to it, so a NodeClass
-	// cannot offer a location outside it however its selectors are written.
+	// A network's zone bounds which locations can attach to it, whatever the
+	// NodeClass selectors say.
 	for _, sub := range n.Subnets {
 		if sub.NetworkZone != "" {
 			out.Zone = string(sub.NetworkZone)

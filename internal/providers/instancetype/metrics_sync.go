@@ -16,16 +16,13 @@ const SyncInterval = 30 * time.Second
 // SyncUnavailable keeps offering_unavailable in step with the suppression cache
 // until ctx is cancelled.
 //
-// Lives here rather than in the metrics package so that package stays a leaf.
-// Every other package points AT metrics; having metrics point back at a domain
-// package made it the one node in the graph pointing both ways, which is an
-// import cycle the first time this package wants to record something itself.
+// Lives here rather than in the metrics package so that package stays a leaf:
+// every other package points AT metrics, and pointing back would be an import
+// cycle the first time this package records something itself.
 //
-// A periodic REBUILD rather than an event on each change, and that is the point.
-// Suppressions expire on a timer with nothing to hook, so a gauge only ever set
-// on failure stays at 1 long after stock returned. That reads as a permanent
-// stockout to whoever is deciding whether capacity has recovered, which is the
-// exact question this project exists to answer correctly.
+// A periodic REBUILD rather than an event per change, because suppressions
+// expire on a timer with nothing to hook: a gauge only ever set on failure
+// stays at 1 long after stock returned, reading as a permanent stockout.
 func SyncUnavailable(ctx context.Context, unavailable *Unavailable) error {
 	ticker := time.NewTicker(SyncInterval)
 	defer ticker.Stop()

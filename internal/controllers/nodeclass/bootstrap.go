@@ -23,11 +23,9 @@ type Discovery interface {
 // BootstrapDiscovery resolves the kubeadm join endpoint and CA pins into
 // status, gating provisioning on them being known.
 //
-// This is the condition that most needs to exist. Every other selector failing
-// produces a create that errors; this one failing produces a server that boots,
-// bills, and never joins, and whose only symptom is a NodeClaim that expires
-// after karpenter's fifteen-minute registration timeout and is replaced by
-// another server that does the same thing.
+// Every other selector failing produces a create that errors; this one failing
+// produces a server that boots, bills and never joins, replaced on karpenter's
+// fifteen-minute registration timeout by another that does the same.
 type BootstrapDiscovery struct {
 	clk       clock.Clock
 	discovery Discovery
@@ -52,36 +50,28 @@ func (b *BootstrapDiscovery) Reconcile(ctx context.Context, nodeClass *v1alpha1.
 		return reconcile.Result{RequeueAfter: misconfiguredRequeue}, nil
 	}
 
-	// cluster-info is only read when it is actually needed. A NodeClass that
-	// overrides both values joins over an endpoint the cluster does not
-	// advertise, and making it depend on a ConfigMap it never consults would
-	// mean an RBAC gap or a non-kubeadm control plane breaks a configuration
-	// that is fully self-contained.
+	// cluster-info is only read when it is actually needed: a NodeClass that
+	// overrides both values is fully self-contained, and making it depend on a
+	// ConfigMap it never consults would let an RBAC gap or a non-kubeadm
+	// control plane break it.
 	if spec.APIServerEndpoint == "" || len(spec.CACertHashes) == 0 {
 		if err := b.discovery.Refresh(ctx); err != nil {
 			var configErr *bootstrap.ConfigError
 			if !errors.As(err, &configErr) {
-				// Transient, and treated exactly like a Hetzner blip: the
-				// condition is left untouched and the error is returned for
-				// backoff. This is the one dependency read over the network
-				// rather than from a cache, so a control-plane rolling upgrade
-				// lands here. Publishing that as False would take every
-				// NodeClass to Ready=False, stop every NodePool, and make core
-				// delete in-flight NodeClaims, over an apiserver replica
-				// cycling for twenty seconds.
-				//
-				// A class that has NEVER resolved still gets a diagnosis, the
-				// same way the Hetzner resolvers do, so a persistently
-				// unreachable apiserver does not present as a NodeClass sitting
-				// silently at "awaiting reconciliation".
+				// Transient, treated like a Hetzner blip: condition untouched,
+				// error returned for backoff. This is the one dependency read
+				// over the network, so a control-plane rolling upgrade lands
+				// here, and publishing that as False would take every NodeClass
+				// to Ready=False and make core delete in-flight NodeClaims. A
+				// class that NEVER resolved still gets a diagnosis rather than
+				// sitting at "awaiting reconciliation".
 				noteUnreachable(conds, v1alpha1.ConditionTypeBootstrapDiscoveryReady, "ClusterInfo", err)
 				return reconcile.Result{}, fmt.Errorf("reading cluster-info, %w", err)
 			}
-			// Configuration. The ConfigMap is absent because the control plane
-			// was not built with kubeadm, the read is forbidden because the
+			// Configuration: the control plane was not built with kubeadm, the
 			// Role was not installed, or the embedded kubeconfig is malformed.
-			// None of those are fixed by backoff, and all of them have to be
-			// readable off the NodeClass rather than only in the logs.
+			// None are fixed by backoff, and all have to be readable off the
+			// NodeClass rather than only in the logs.
 			return misconfigured("ClusterInfoUnavailable",
 				fmt.Sprintf("reading the join parameters from %s/%s: %s", bootstrap.ClusterInfoNamespace, bootstrap.ClusterInfoName, err))
 		}
@@ -92,11 +82,10 @@ func (b *BootstrapDiscovery) Reconcile(ctx context.Context, nodeClass *v1alpha1.
 		return misconfigured("JoinParametersIncomplete", err.Error())
 	}
 
-	// The pins are re-validated even when they came from cluster-info, because
-	// spec.bootstrap.caCertHashes is a possible source and its CRD pattern only
-	// constrains entries that are present in the manifest that set it, not the
-	// discovered ones. kubeadm rejects a malformed pin at join time with an
-	// error that reaches nobody.
+	// Re-validated even when the pins came from cluster-info, because
+	// spec.bootstrap.caCertHashes is a possible source and the CRD pattern only
+	// constrains entries present in the manifest. kubeadm rejects a malformed
+	// pin at join time with an error that reaches nobody.
 	if bad := invalidHashes(hashes); len(bad) > 0 {
 		return misconfigured("InvalidCACertHash",
 			fmt.Sprintf("CA pins are not in sha256:<64 hex> form: %s", strings.Join(bad, ", ")))

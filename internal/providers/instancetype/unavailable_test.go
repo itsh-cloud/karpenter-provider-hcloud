@@ -37,8 +37,7 @@ func TestMarkAndExpiry(t *testing.T) {
 	}
 
 	// Just before expiry it is still suppressed; just after, it is not. The
-	// second half matters most: this is how the provider notices stock has
-	// returned, which is the entire point of the project.
+	// second half is how the provider notices stock has returned.
 	now = now.Add(5*time.Minute - time.Nanosecond)
 	if !u.Has("cx43", "nbg1") {
 		t.Error("expired early")
@@ -126,12 +125,9 @@ func TestConcurrentAccess(t *testing.T) {
 	}
 }
 
-// TestSnapshotReapsExpiredEntries.
-//
-// Snapshot is what the metric sync rebuilds from, so an expired entry lingering
-// here becomes a gauge that reads as a permanent stockout long after stock
-// returned. That is the exact question this project exists to answer correctly,
-// so it is the reaping, not the reporting, that matters.
+// TestSnapshotReapsExpiredEntries: Snapshot is what the metric sync rebuilds
+// from, so an expired entry lingering here becomes a gauge reading as a
+// permanent stockout long after stock returned.
 func TestSnapshotReapsExpiredEntries(t *testing.T) {
 	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
 	u := NewUnavailableWithOptions(5*time.Minute, fixedClock(&now))

@@ -25,10 +25,10 @@ const (
 
 // cloudConfig is the #cloud-config document.
 //
-// Built as a struct and marshalled rather than rendered from a text template.
-// ExtraFiles content is operator-supplied and arbitrary, so templating it
-// straight into YAML would let a NodeClass break out of its content block and
-// rewrite the rest of the document, including the join configuration.
+// Marshalled from a struct rather than rendered from a text template, because
+// ExtraFiles content is operator-supplied and arbitrary: templating it into
+// YAML would let a NodeClass break out of its content block and rewrite the
+// rest of the document, join configuration included.
 type cloudConfig struct {
 	PackageUpdate  bool        `json:"package_update"`
 	PackageUpgrade bool        `json:"package_upgrade"`

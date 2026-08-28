@@ -26,10 +26,9 @@ func NewNetwork(clk clock.Clock, resources hcloudapi.Resources) *Network {
 func (n *Network) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNodeClass) (reconcile.Result, error) {
 	sel := nodeClass.Spec.NetworkSelector
 	if sel == nil {
-		// Optional selector left unset resolves to True, never Unknown. An
+		// An optional selector left unset resolves to True, never Unknown: an
 		// Unknown dependent pins the Ready roll-up at Unknown forever, which
-		// karpenter core reports on the NodePool as NodeClassReadinessUnknown
-		// and which blocks provisioning as effectively as a hard failure.
+		// blocks provisioning as effectively as a hard failure.
 		nodeClass.Status.Network = nil
 		nodeClass.StatusConditions(status.WithClock(n.clk)).SetTrue(v1alpha1.ConditionTypeNetworkReady)
 		return reconcile.Result{RequeueAfter: resolvedRequeue}, nil
@@ -50,9 +49,9 @@ func (n *Network) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNodeC
 	}
 
 	if net.Zone == "" {
-		// A network with no subnet has no zone, and a server cannot be attached
-		// to it at all. Reported here rather than left to fail at create time,
-		// where it surfaces as a generic invalid_input on every NodeClaim.
+		// A network with no subnet has no zone and no server can attach to it.
+		// Reported here rather than left to surface as a generic invalid_input
+		// on every NodeClaim at create time.
 		nodeClass.Status.Network = nil
 		nodeClass.StatusConditions(status.WithClock(n.clk)).SetFalse(
 			v1alpha1.ConditionTypeNetworkReady, "NetworkHasNoSubnet",

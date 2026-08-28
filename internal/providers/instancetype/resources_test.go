@@ -10,10 +10,7 @@ import (
 )
 
 // measured holds real figures read from live Hetzner nodes, in Ki as reported
-// by the kubelet. These are the ground truth this package is calibrated
-// against, which makes the tests below unusually strong: the inputs are not
-// invented.
-//
+// by the kubelet, and is the ground truth this package is calibrated against.
 // capacity - allocatable is exactly 1560576Ki (512Mi kube + 512Mi system +
 // 500Mi eviction) and 400m of CPU on every one of them.
 var measured = []struct {
@@ -32,12 +29,10 @@ var measured = []struct {
 
 func ki(q resource.Quantity) int64 { return q.Value() / 1024 }
 
-// TestCapacityNeverExceedsMeasured is the safety property that matters.
-//
-// Over-estimating capacity makes Karpenter pack a node past what it holds, and
-// the symptom is pods Pending on a node the scheduler thinks has room, then
-// memory pressure and NotReady flapping. Under-estimating merely wastes a
-// little headroom. So the model must never be optimistic, for any type.
+// TestCapacityNeverExceedsMeasured: over-estimating capacity makes Karpenter
+// pack a node past what it holds, and the symptom is pods Pending on a node the
+// scheduler thinks has room. Under-estimating merely wastes headroom, so the
+// model must never be optimistic, for any type.
 func TestCapacityNeverExceedsMeasured(t *testing.T) {
 	for _, m := range measured {
 		t.Run(m.name, func(t *testing.T) {

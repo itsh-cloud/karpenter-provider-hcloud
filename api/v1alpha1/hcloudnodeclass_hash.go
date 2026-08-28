@@ -18,21 +18,19 @@ const (
 	// for identical input: a new hashed field, a change to which fields carry
 	// hash:"ignore", or a change to the hashing options below.
 	//
-	// It exists so that a controller upgrade does not mass-replace the fleet.
-	// Drift compares hashes only when both sides carry the same version; when
-	// they differ, the hash controller back-fills the new annotation and drift
-	// stays quiet until like is being compared with like. An operator who
-	// actually wants a roll bumps spec.bootstrap.revision instead.
+	// It stops a controller upgrade mass-replacing the fleet: drift compares
+	// hashes only when both sides carry the same version, and when they differ
+	// the hash controller back-fills the new annotation while drift stays
+	// quiet. An operator who wants a roll bumps spec.bootstrap.revision.
 	HashVersion = "v1"
 )
 
 // Hash returns a stable hash of the drift-relevant parts of the spec.
 //
 // Fields tagged hash:"ignore" are excluded because they are readable back from
-// a live Hetzner server and are therefore compared directly. What remains is
-// what hcloud will not tell us after the fact: userData (write-only) and
-// ssh_keys (absent from the server representation), plus the kubelet
-// configuration those render into.
+// a live Hetzner server and compared directly. What remains is what hcloud
+// will not tell us after the fact: userData (write-only), ssh_keys (absent
+// from the server representation) and the kubelet config they render into.
 func (in *HCloudNodeClass) Hash() string {
 	return fmt.Sprint(lo.Must(hashstructure.Hash(in.Spec, hashstructure.FormatV2, &hashstructure.HashOptions{
 		// Slices are order-insensitive: reordering sshKeySelectors or

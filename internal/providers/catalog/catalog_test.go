@@ -76,11 +76,9 @@ func TestRefreshPopulatesSnapshot(t *testing.T) {
 	}
 }
 
-// TestFailureKeepsLastGoodSnapshot is the property that matters most here.
-//
-// A Hetzner API blip must never make Karpenter believe the cluster has zero
-// instance types. That would present as every pending pod being permanently
-// unschedulable with no capacity anywhere, which is both alarming and wrong.
+// TestFailureKeepsLastGoodSnapshot: a Hetzner API blip must never make
+// Karpenter believe the cluster has zero instance types, which would present as
+// every pending pod being permanently unschedulable with no capacity anywhere.
 func TestFailureKeepsLastGoodSnapshot(t *testing.T) {
 	f := &fakeCatalog{types: testTypes()}
 	p := NewProvider(f)
@@ -176,9 +174,8 @@ func TestZeroJitterIsExact(t *testing.T) {
 }
 
 // TestStartFailsFastOnRejectedCredential: a bad token should be an immediate
-// startup error, not something discovered at the first scale-up during an
-// incident. It will not fix itself, and every retry burns rate limit shared
-// with the CCM and the CSI driver.
+// startup error, not something discovered at the first scale-up. It will not
+// fix itself, and every retry burns rate limit shared with the CCM and CSI.
 func TestStartFailsFastOnRejectedCredential(t *testing.T) {
 	f := &fakeCatalog{err: hcloud.Error{Code: hcloud.ErrorCodeUnauthorized, Message: "unable to authenticate"}}
 	p := NewProvider(f)
@@ -188,13 +185,11 @@ func TestStartFailsFastOnRejectedCredential(t *testing.T) {
 	}
 }
 
-// TestStartSurvivesTransientFirstRefresh.
-//
-// Start runs as a manager Runnable, so returning an error fails the manager and
-// restarts the pod. Treating a Hetzner outage or a 429 as fatal therefore
-// CrashLoopBackOffs for the duration of the outage, taking down the controllers
-// that need no Hetzner access at all, and the restarts themselves re-issue the
-// request that is being rate limited.
+// TestStartSurvivesTransientFirstRefresh: Start runs as a manager Runnable, so
+// returning an error restarts the pod. Treating a Hetzner outage or a 429 as
+// fatal would CrashLoopBackOff for its duration, take down the controllers
+// needing no Hetzner access, and re-issue the rate-limited request on each
+// restart.
 func TestStartSurvivesTransientFirstRefresh(t *testing.T) {
 	f := &fakeCatalog{err: errors.New("dial tcp: i/o timeout")}
 	p := NewProvider(f, WithInterval(10*time.Millisecond), WithJitter(0))
@@ -259,13 +254,11 @@ func TestStartStopsOnContextCancel(t *testing.T) {
 	}
 }
 
-// TestRefreshSignalsWaiters.
-//
-// The wake-up is the only thing that makes a NodeClass blocked on the catalog
-// recover promptly: the requeue on that branch is a deliberately slow backstop,
-// because a short one is a full re-resolve that no rate limiter throttles. So a
-// silently broken signal does not fail, it degrades to a minute of delay that
-// nobody would ever notice.
+// TestRefreshSignalsWaiters: the wake-up is the only thing that makes a
+// NodeClass blocked on the catalog recover promptly, since the requeue on that
+// branch is a deliberately slow backstop (a short one is a full re-resolve that
+// no rate limiter throttles). A broken signal degrades silently to a minute of
+// delay rather than failing.
 func TestRefreshSignalsWaiters(t *testing.T) {
 	f := &fakeCatalog{types: testTypes()}
 	p := NewProvider(f)
@@ -297,10 +290,10 @@ func TestFailedRefreshDoesNotSignal(t *testing.T) {
 	}
 }
 
-// TestRefreshNeverBlocksOnAnAbsentListener is the property that keeps the
-// refresh loop independent of its consumers. With a blocking send, a controller
-// that is not yet reading, which is the normal state before the manager starts,
-// would stall the catalog and therefore stall every NodeClass waiting on it.
+// TestRefreshNeverBlocksOnAnAbsentListener keeps the refresh loop independent
+// of its consumers. With a blocking send, a controller not yet reading (the
+// normal state before the manager starts) would stall the catalog and every
+// NodeClass waiting on it.
 func TestRefreshNeverBlocksOnAnAbsentListener(t *testing.T) {
 	f := &fakeCatalog{types: testTypes()}
 	p := NewProvider(f)

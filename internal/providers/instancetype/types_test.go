@@ -47,15 +47,14 @@ func testNodeClass(locations ...string) *v1alpha1.HCloudNodeClass {
 	}
 }
 
-// TestEveryOfferingCarriesCSILocation is the single most important assertion
-// in this package.
+// TestEveryOfferingCarriesCSILocation.
 //
-// Karpenter core injects a bound PV's nodeAffinity keys as NodeClaim
-// requirements, and Requirements.Compatible() DENIES a custom label that a
-// NodePool template leaves undefined. Every hcloud PV carries nodeAffinity on
-// csi.hetzner.cloud/location and on nothing else. So if an offering omits this
-// key, every pod with an existing volume becomes permanently unschedulable,
-// with nothing in the scheduling error pointing at Karpenter.
+// Core injects a bound PV's nodeAffinity keys as NodeClaim requirements and
+// Requirements.Compatible() DENIES a custom label a NodePool template leaves
+// undefined. Every hcloud PV carries nodeAffinity on csi.hetzner.cloud/location
+// and nothing else, so an offering omitting this key makes every pod with an
+// existing volume permanently unschedulable, with nothing in the scheduling
+// error pointing at Karpenter.
 func TestEveryOfferingCarriesCSILocation(t *testing.T) {
 	sts := testCatalog()
 	its := Build(sts, testNodeClass(), 0, NewUnavailable(), Options{})
@@ -85,23 +84,14 @@ func TestEveryOfferingCarriesCSILocation(t *testing.T) {
 	}
 }
 
-// TestRegionIsLocationAndZoneIsFree pins the topology shape.
-//
-// hcloud-CCM writes region=location and zone=datacenter. We can constrain the
-// former and must not constrain the latter.
 // TestOfferingsCarryTheZoneKarpenterWillPriceAgainst.
 //
 // Karpenter prices a running node with OfferingPrice(node zone label, capacity
-// type). If no offering carries that zone the lookup fails, the candidate
-// prices at 0, and consolidation filters replacements to those cheaper than 0,
-// i.e. none. Core then reports "Can't replace with a cheaper node" forever,
-// which silently removes replacement consolidation, the one thing
-// cluster-autoscaler could not do and the reason this project exists.
-//
-// Leaving zone unconstrained does not avoid that: Requirements.Get on a missing
-// key returns an Exists requirement whose Any() is a RANDOM number, so the
-// lookup can never match. This asserts the end-to-end property, the price
-// lookup succeeding, rather than the mere presence of a label.
+// type). If no offering carries that zone the candidate prices at 0 and
+// consolidation looks for replacements cheaper than 0, finding none, so
+// replacement consolidation silently stops working. Leaving zone unconstrained
+// does not avoid that, see LegacyDatacenterForLocation. This asserts the
+// end-to-end property, the price lookup succeeding, not just a label.
 func TestOfferingsCarryTheZoneKarpenterWillPriceAgainst(t *testing.T) {
 	its := Build(testCatalog(), testNodeClass("nbg1"), 0, NewUnavailable(), Options{})
 	if len(its) == 0 {
@@ -150,15 +140,12 @@ func TestZoneMatchesTheCCMMapping(t *testing.T) {
 	}
 }
 
-// TestAvailabilityIgnoresHetznerFlag is the regression test for the finding
-// that overturned the original design.
+// TestAvailabilityIgnoresHetznerFlag.
 //
-// cx43 is reported unavailable in nbg1 and fsn1 by the catalog fixture, which
-// mirrors the live API. Ordering such a type has been observed to succeed, so
-// the offering must still be Available. Gating on the flag would exclude
-// precisely the cheap type worth returning to after a stockout, keeping an
-// expensive fallback node alive: this project's founding failure, caused by
-// its own fix.
+// The fixture reports cx43 unavailable in nbg1 and fsn1, mirroring the live
+// API. Ordering such a type has been observed to succeed, so the offering must
+// still be Available: gating on the flag would exclude precisely the cheap type
+// worth returning to after a stockout, keeping an expensive fallback alive.
 func TestAvailabilityIgnoresHetznerFlag(t *testing.T) {
 	sts := testCatalog()
 	its := Build(sts, testNodeClass("nbg1"), 0, NewUnavailable(), Options{})

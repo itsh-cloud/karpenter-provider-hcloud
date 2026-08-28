@@ -22,10 +22,10 @@ import (
 // DefaultMaxCreateAttempts bounds how many (type, location) candidates one
 // Create walks before giving up.
 //
-// Not unbounded: each attempt costs a POST plus an action wait, so a project
-// that is genuinely out of capacity everywhere would otherwise spend minutes
-// and a large slice of the shared 3600/hour rate limit discovering that. Eight
-// is deep enough to cross several server types and both locations.
+// Each attempt costs a POST plus an action wait, so a project genuinely out of
+// capacity everywhere would otherwise spend minutes and a large slice of the
+// shared rate limit discovering that. Eight crosses several types and both
+// locations.
 const DefaultMaxCreateAttempts = 8
 
 // Candidate is one (instance type, location) pair a NodeClaim could be
@@ -63,9 +63,8 @@ var errNoClusterName = errors.New("cluster name is empty, refusing to act on uno
 // errNotManaged reports a server this cluster's provider does not own.
 //
 // A distinct type rather than a string, so a caller can tell "I will not touch
-// this" apart from "the API call failed": the first must never be retried and
-// must be loud, because it means something asked us to delete a machine that
-// is not ours.
+// this" apart from "the API call failed". The first must never be retried and
+// must be loud: something asked us to delete a machine that is not ours.
 type errNotManaged struct {
 	name string
 	id   int64
@@ -79,19 +78,13 @@ func (e errNotManaged) Error() string {
 // Create orders a server for nodeClaim, falling through to the next-cheapest
 // candidate on a capacity failure.
 //
-// # Why the ordering is re-derived here
-//
-// Karpenter core computes a price ordering and then loses it in transit. In
-// scheduling/nodeclaimtemplate.go it does OrderByPrice and serialises the
-// result into a NodeSelectorRequirement on node.kubernetes.io/instance-type,
-// but Requirements is a Go map and NodeSelectorRequirements() iterates it
-// unordered. Any provider that walks the requirement's values, or the API's
-// listing order, therefore picks essentially at random.
-//
-// That is the difference between one correct replacement and a fleet that
-// converges on whatever the map happened to yield first, which is the founding
-// incident of this project. So the ordering is recomputed here from this
-// provider's own catalog, and core's requirement is used only as a filter.
+// The price ordering is recomputed here from this provider's own catalog
+// because core loses its own in transit: scheduling/nodeclaimtemplate.go does
+// OrderByPrice and serialises the result into a NodeSelectorRequirement on
+// node.kubernetes.io/instance-type, but Requirements is a Go map and
+// NodeSelectorRequirements() iterates it unordered. A provider that walks the
+// requirement's values, or the API's listing order, picks essentially at
+// random. Core's requirement is used here only as a filter.
 func (p *Provider) Create(
 	ctx context.Context,
 	nodeClass *v1alpha1.HCloudNodeClass,
@@ -120,14 +113,14 @@ func (p *Provider) Create(
 
 		srv, err := p.servers.Create(ctx, req)
 		if err == nil {
-			// Measured across the WHOLE Create, fall-through included, because
-			// the expensive case is the one that walked several out-of-stock
-			// candidates and that is what an operator is trying to see.
+			// Measured across the WHOLE Create, fall-through included: the
+			// expensive case is the one that walked several out-of-stock
+			// candidates.
 			metrics.LaunchDuration.WithLabelValues(c.InstanceType.Name, c.Location, "succeeded").
 				Observe(time.Since(started).Seconds())
-			// So the next List reflects a server we just made. Without this,
-			// core's garbage collector can read a cached listing that predates
-			// the create and reap the NodeClaim behind a live node.
+			// So the next List reflects a server we just made: otherwise core's
+			// garbage collector reads a listing predating the create and reaps
+			// the NodeClaim behind a live node.
 			p.cache.invalidate()
 			return srv, c.InstanceType, nil
 		}
@@ -136,19 +129,18 @@ func (p *Provider) Create(
 		class := hcloudapi.Classify(err)
 		code, _ := hcloudapi.Code(err)
 		metrics.LaunchFailures.WithLabelValues(c.InstanceType.Name, c.Location, class.String()).Inc()
-		// An unrecognised code is retried as transient, which is safe and
-		// silent. Counting it is how a new terminal code becomes visible
-		// instead of being retried forever.
+		// An unrecognised code is retried as transient, safely and silently.
+		// Counting it is how a new terminal code becomes visible instead of
+		// being retried forever.
 		if code != "" && !hcloudapi.IsKnownCode(err) {
 			metrics.UnknownErrorCodes.WithLabelValues(code).Inc()
 		}
 
 		switch class {
 		case hcloudapi.ClassCapacity:
-			// The whole point of the fall-through, and it fires on every
-			// capacity-class code rather than only resource_unavailable:
-			// placement_error and no_space_left_in_location are equally
-			// "not here, not now".
+			// Fires on every capacity-class code, not only
+			// resource_unavailable: placement_error and
+			// no_space_left_in_location are equally "not here, not now".
 			p.unavailable.Mark(c.InstanceType.Name, c.Location, code)
 			metrics.OfferingUnavailable.WithLabelValues(c.InstanceType.Name, c.Location, code).Set(1)
 			log.FromContext(ctx).V(1).Info("capacity unavailable, falling through to the next candidate",
@@ -162,17 +154,15 @@ func (p *Provider) Create(
 				// leaks a running, billing server that nothing owns.
 				adopted, aErr := p.adopt(ctx, req.Name, nodeClaim)
 				if aErr != nil {
-					// Loud, always. A refusal here means something already
-					// holds this name and is not ours, which is the most
-					// security-relevant thing this package can observe;
-					// swallowing it reports a generic create failure instead.
+					// Loud, always: a refusal means something else already holds
+					// this name, and swallowing it would report a generic
+					// create failure instead.
 					log.FromContext(ctx).Error(aErr, "refusing to adopt an existing server", "server", req.Name)
 				} else if adopted != nil {
-					// The type of the server we ACTUALLY adopted, not the
-					// candidate this attempt happened to be trying. The
-					// ordering can differ between the lost create and this
-					// retry, and core never re-reads capacity from the Node:
-					// publishing the wrong type binpacks every future pod
+					// The type ACTUALLY adopted, not the candidate this attempt
+					// was trying: the ordering can differ between the lost
+					// create and this retry, and core never re-reads capacity
+					// from the Node, so a wrong type binpacks every future pod
 					// against a machine that does not exist.
 					adoptedType := findInstanceType(instanceTypes, adopted.ServerType)
 					if adoptedType == nil {
@@ -194,9 +184,9 @@ func (p *Provider) Create(
 			return nil, nil, cloudprovider.NewCreateError(err, "CreateFailed", err.Error())
 
 		case hcloudapi.ClassQuota:
-			// A different server type does not help: the project is at a
-			// limit. Surfaced as insufficient capacity so core stops trying,
-			// rather than as a create error that would fail the NodeClaim.
+			// A different server type does not help: the project is at a limit.
+			// Surfaced as insufficient capacity so core stops trying, rather
+			// than as a create error that would fail the NodeClaim.
 			metrics.LaunchDuration.WithLabelValues(c.InstanceType.Name, c.Location, "quota").Observe(time.Since(started).Seconds())
 			return nil, nil, cloudprovider.NewInsufficientCapacityError(err)
 
@@ -207,21 +197,17 @@ func (p *Provider) Create(
 			return nil, nil, cloudprovider.NewCreateError(err, "CredentialRejected", err.Error())
 
 		default:
-			// Transient. Return rather than burning the remaining candidates
-			// on what is probably a network problem; core retries the whole
-			// launch with backoff.
+			// Transient. Return rather than burn the remaining candidates on
+			// what is probably a network problem; core retries with backoff.
 			metrics.LaunchDuration.WithLabelValues(c.InstanceType.Name, c.Location, "transient").Observe(time.Since(started).Seconds())
 			return nil, nil, fmt.Errorf("creating server, %w", err)
 		}
 	}
 
-	// Recorded on the exhausted path too. A Create that walked eight
-	// out-of-stock candidates is the slowest thing this provider does and the
-	// case the bucket layout was chosen for; observing only on success makes
-	// the result label a constant and hides exactly that.
-	// Labelled with the LAST candidate tried, matching every other call site
-	// here, so the series says where the search gave up rather than where it
-	// started.
+	// Recorded on the exhausted path too: a Create that walked every candidate
+	// is the slowest thing this provider does, and observing only on success
+	// makes the result label a constant and hides it. Labelled with the LAST
+	// candidate tried, so the series says where the search gave up.
 	last := candidates[attempts-1]
 	metrics.LaunchDuration.WithLabelValues(last.InstanceType.Name, last.Location, "exhausted").
 		Observe(time.Since(started).Seconds())
@@ -232,21 +218,18 @@ func (p *Provider) Create(
 // HasCandidates reports whether any (type, location) pair could satisfy this
 // NodeClaim, without touching the Hetzner API.
 //
-// Exists so the caller can avoid minting a join token, which is a live
-// cluster-join credential, for a NodeClaim that has nowhere to go. It does
-// order the candidates as a side effect of reusing the same function; that is
-// pure and cheap against a catalog of a few dozen types, and sharing one
-// definition of "a valid candidate" with Create matters more than saving the
-// sort.
+// Exists so the caller can avoid minting a join token, a live cluster-join
+// credential, for a NodeClaim that has nowhere to go. It reuses Create's
+// function so both agree on what a valid candidate is.
 func (p *Provider) HasCandidates(nodeClaim *karpv1.NodeClaim, instanceTypes []*cloudprovider.InstanceType) bool {
 	return len(p.orderedCandidates(nodeClaim, instanceTypes)) > 0
 }
 
 // findInstanceType returns the catalog entry for a server type, or nil.
 //
-// nil is a meaningful answer rather than a failure: an adopted server may be a
-// type the current catalog no longer offers, and publishing no capacity is
-// better than publishing another type's.
+// nil is a meaningful answer, not a failure: an adopted server may be a type
+// the catalog no longer offers, and publishing no capacity beats publishing
+// another type's.
 func findInstanceType(instanceTypes []*cloudprovider.InstanceType, name string) *cloudprovider.InstanceType {
 	for _, it := range instanceTypes {
 		if it.Name == name {
@@ -258,10 +241,9 @@ func findInstanceType(instanceTypes []*cloudprovider.InstanceType, name string) 
 
 // adopt recovers the server from a create whose response never arrived.
 //
-// Matched on BOTH our ownership label and the NodeClaim label, never on the
-// name alone: a name collision with something we do not own must fail loudly
-// rather than silently hand another system's server to karpenter, which would
-// then manage and eventually delete it.
+// Matched on BOTH our ownership label and the NodeClaim label, never the name
+// alone: a collision with something we do not own must fail loudly rather than
+// hand another system's server to karpenter, which would then delete it.
 func (p *Provider) adopt(ctx context.Context, name string, nodeClaim *karpv1.NodeClaim) (*hcloudapi.Server, error) {
 	srv, err := p.servers.GetByName(ctx, name)
 	if err != nil {
@@ -283,22 +265,15 @@ func (p *Provider) orderedCandidates(nodeClaim *karpv1.NodeClaim, instanceTypes 
 
 	var out []Candidate
 	for _, it := range instanceTypes {
-		// Intersects, NOT Requirements.Compatible, and the direction matters
-		// enough to fail every provision if it is wrong.
-		//
-		// Compatible iterates the ARGUMENT's keys and rejects any non-well-known
-		// key the RECEIVER does not declare. Core stamps a nodeclass label into
-		// every NodeClaim's requirements, karpenter.itsh.dev/hcloudnodeclass In
-		// [<name>], via NewNodeClaimTemplate. No instance type declares that key
-		// and it is not a well-known label, so it.Requirements.Compatible(reqs)
-		// rejects EVERY type for EVERY real NodeClaim. Create then reports
-		// insufficient capacity, core deletes the NodeClaim, and the cluster
-		// churns forever with every pod pending and the metric blaming Hetzner.
-		//
-		// This is core's own filter, from provisioning/scheduling/nodeclaim.go:
-		// Intersects at the type level, IsCompatible at the offering level.
-		// Matching it is what makes "a candidate core would accept" mean the
-		// same thing on both sides.
+		// Intersects, NOT Requirements.Compatible: Compatible iterates the
+		// ARGUMENT's keys and rejects any non-well-known key the RECEIVER does
+		// not declare. Core stamps karpenter.itsh.dev/hcloudnodeclass into every
+		// NodeClaim's requirements and no instance type declares that key, so
+		// Compatible would reject EVERY type for EVERY real NodeClaim: create
+		// reports insufficient capacity, core deletes the NodeClaim, and the
+		// cluster churns with every pod pending and the metrics blaming Hetzner.
+		// This mirrors core's own filter in provisioning/scheduling/nodeclaim.go,
+		// Intersects at the type level and IsCompatible at the offering level.
 		if it.Requirements.Intersects(reqs) != nil {
 			continue
 		}
@@ -314,12 +289,10 @@ func (p *Provider) orderedCandidates(nodeClaim *karpv1.NodeClaim, instanceTypes 
 			if !reqs.IsCompatible(o.Requirements, scheduling.AllowUndefinedWellKnownLabels) {
 				continue
 			}
-			// Read as a single definite value, never Any().
-			//
-			// Requirements.Get on a missing key returns an Exists requirement,
-			// whose Any() is a RANDOM number rather than the empty string, so an
-			// offering without a region would silently order a server in a
-			// location named something like "8198044085188639281".
+			// Read as a single definite value, never Any(): Requirements.Get on
+			// a missing key returns an Exists requirement whose Any() is a
+			// RANDOM number, so an offering without a region would silently
+			// order a server in a location named "8198044085188639281".
 			region := o.Requirements.Get(corev1RegionLabel)
 			if region.Len() != 1 {
 				continue
@@ -328,10 +301,9 @@ func (p *Provider) orderedCandidates(nodeClaim *karpv1.NodeClaim, instanceTypes 
 		}
 	}
 
-	// Cheapest first, then deterministic tiebreaks. The tiebreaks are not
-	// cosmetic: without them two equally priced candidates swap order between
-	// passes, so a replacement can pick a different type each time and the
-	// fleet never settles.
+	// Cheapest first, then deterministic tiebreaks. Without the tiebreaks two
+	// equally priced candidates swap order between passes, so a replacement
+	// picks a different type each time and the fleet never settles.
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Price != out[j].Price {
 			return out[i].Price < out[j].Price

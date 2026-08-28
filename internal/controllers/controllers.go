@@ -21,29 +21,28 @@ import (
 )
 
 // The controllers take narrowed interfaces so they can be tested without a
-// refresh loop or a live cluster. These assertions keep the narrowing honest:
-// without them, a signature change in either provider would only be caught at
-// the call site in main, which the tests never reach.
+// refresh loop or a live cluster. These assertions keep the narrowing honest: a
+// signature change would otherwise only be caught in main, which tests never
+// reach.
 var (
 	_ nodeclass.CatalogProvider = (*catalog.Provider)(nil)
 	_ nodeclass.Discovery       = (*bootstrap.Discovery)(nil)
 	_ instancegc.Provider       = (*instance.Provider)(nil)
 
-	// The status controller registered below is generic over status.Object, so
-	// without this the first thing to notice a drifted GetConditions or
-	// StatusConditions signature is the compiler at that call site, and the
-	// second is core's readiness controller at runtime. status.ForOption is
-	// exactly the shape that shifts under a dependency bump.
+	// The status controller below is generic over status.Object, and
+	// status.ForOption is exactly the shape that shifts under a dependency
+	// bump. Without this, a drifted signature surfaces at runtime in core's
+	// readiness controller.
 	_ status.Object = (*v1alpha1.HCloudNodeClass)(nil)
 )
 
 // NewControllers returns every controller this provider registers, in the shape
 // karpenter's operator.WithControllers takes.
 //
-// Two event recorders, and they are not interchangeable. Karpenter's
-// events.Recorder deduplicates, which is what the termination and
-// location-narrowing events need since both re-fire on a timer. operatorpkg's
-// status controller wants the raw client-go recorder.
+// Two event recorders, not interchangeable: karpenter's events.Recorder
+// deduplicates, which the termination and location-narrowing events need since
+// both re-fire on a timer, while operatorpkg's status controller wants the raw
+// client-go recorder.
 func NewControllers(
 	clk clock.Clock,
 	kubeClient client.Client,
@@ -58,16 +57,14 @@ func NewControllers(
 	return []controller.Controller{
 		nodeclasshash.NewController(kubeClient),
 		nodeclass.NewController(clk, kubeClient, recorder, resources, catalogProvider, discovery),
-		// Karpenter core ships the mirror of this and not this: it reaps
-		// NodeClaims whose instance is gone, never instances whose NodeClaim is
-		// gone, because only a provider can enumerate its own instances.
+		// Core reaps NodeClaims whose instance is gone, never the reverse, so
+		// this side is the provider's to ship.
 		instancegc.NewController(clk, kubeClient, instances, clusterName),
-		// Observability only: this emits condition metrics and a Kubernetes
-		// event on every condition transition. It never writes to the API, so
-		// its unconditional ten-second requeue is a metric refresh rather than
-		// status churn. Registered here because karpenter core only registers
-		// it for its own NodeClaim and NodePool types, so without this a
-		// NodeClass stuck at Ready=False is invisible to alerting.
+		// Observability only: condition metrics and an event per transition,
+		// never a write to the API, so its ten-second requeue is a metric
+		// refresh rather than status churn. Registered here because core only
+		// registers it for NodeClaim and NodePool, so without this a NodeClass
+		// stuck at Ready=False is invisible to alerting.
 		status.NewController[*v1alpha1.HCloudNodeClass](kubeClient, eventRecorder),
 	}
 }

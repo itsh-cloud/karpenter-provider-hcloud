@@ -9,10 +9,8 @@ import (
 )
 
 // Class is how the provider should react to an error from the Hetzner API.
-//
 // Getting this mapping right is the difference between a stockout that routes
-// around itself and one that hot-loops on an unorderable server type until
-// someone notices the bill.
+// around itself and one that hot-loops on an unorderable server type.
 type Class int
 
 const (
@@ -25,15 +23,14 @@ const (
 	ClassCapacity
 
 	// ClassQuota means the account or project is at a limit. A different
-	// server type will not help, so marking one offering unavailable is
-	// pointless: suppress them all for the cooldown and surface it loudly,
-	// because this needs an operator, not a retry.
+	// server type will not help, so suppress all offerings for the cooldown
+	// and surface it loudly: this needs an operator, not a retry.
 	ClassQuota
 
-	// ClassTransient means try again unchanged. Crucially it must NOT mark
-	// any offering unavailable: rate limiting is caused by our own request
-	// volume, and letting it poison the catalog would turn a slowdown into a
-	// self-inflicted capacity outage.
+	// ClassTransient means try again unchanged. It must NOT mark any offering
+	// unavailable: rate limiting is caused by our own request volume, and
+	// letting it poison the catalog turns a slowdown into a self-inflicted
+	// capacity outage.
 	ClassTransient
 
 	// ClassConfig means the request will never succeed as written. Surface it
@@ -69,13 +66,12 @@ func (c Class) String() string {
 var classes = map[string]Class{
 	// Capacity. The server type cannot be placed here, now.
 	string(hcloud.ErrorCodeResourceUnavailable): ClassCapacity,
-	// placement_error covers both "no host has room" and "the spread
-	// placement group is full". Those are indistinguishable from the outside,
-	// which is one reason to leave placement groups unset by default: no
-	// amount of falling back to another server type fixes a full group.
+	// placement_error covers both "no host has room" and "the spread placement
+	// group is full", which are indistinguishable from the outside. No amount
+	// of falling back to another server type fixes a full group.
 	string(hcloud.ErrorCodePlacementError): ClassCapacity,
-	// Documented as volume space, so it will not fire on a server create. It
-	// is still a capacity condition, and classifying it costs nothing.
+	// Documented as volume space, so it will not fire on a server create, but
+	// it is still a capacity condition.
 	string(hcloud.ErrorCodeNoSpaceLeftInLocation): ClassCapacity,
 	// Datacenter-wide rather than type-specific; the caller should suppress
 	// the whole datacenter rather than one offering.
@@ -114,23 +110,19 @@ var classes = map[string]Class{
 }
 
 // CodeUniqueness is the code Hetzner returns for a server name already in use.
-//
-// Exported because the create path singles it out: on a create it means a
-// previous attempt's response was lost while the server was made, which is
-// recoverable by adoption, unlike the rest of ClassConfig. Sourced from
-// hcloud-go here so the literal is spelled once, in the only package that
-// imports it.
+// The create path singles it out: there it means a previous attempt's response
+// was lost while the server was made, which is recoverable by adoption, unlike
+// the rest of ClassConfig.
 const CodeUniqueness = string(hcloud.ErrorCodeUniquenessError)
 
 // Code extracts the Hetzner error code from err, following wrapping.
 //
-// It deliberately does not use hcloud.IsError, which only ever matches
-// hcloud.Error. Server creation is asynchronous: the API returns an Action,
-// and a placement failure surfaces later as hcloud.ActionError, a DIFFERENT
-// type whose Code is a plain string rather than an hcloud.ErrorCode. So
-// hcloud.IsError(err, hcloud.ErrorCodePlacementError) is false for exactly the
-// failure we care most about, and a provider relying on it treats every async
-// stockout as a generic error and retries the same unorderable type forever.
+// Deliberately not hcloud.IsError, which only ever matches hcloud.Error.
+// Server creation is asynchronous, and a placement failure surfaces later as
+// hcloud.ActionError, a DIFFERENT type whose Code is a plain string rather
+// than an hcloud.ErrorCode. So IsError is false for exactly the failure we
+// care most about, and a provider relying on it retries the same unorderable
+// server type forever.
 func Code(err error) (string, bool) {
 	if err == nil {
 		return "", false
@@ -151,14 +143,11 @@ func Code(err error) (string, bool) {
 	return "", false
 }
 
-// Classify reports how the provider should react to err.
-//
-// Unrecognised codes, and non-Hetzner errors such as a dial timeout or a
-// cancelled context, are transient. That bias is deliberate: retrying an
-// unknown error wastes a little time, whereas guessing "capacity" would
-// suppress an offering that is actually fine, and guessing "config" would fail
-// a NodeClaim that might have succeeded. Callers should count unrecognised
-// codes so new ones become visible rather than silently absorbed.
+// Classify reports how the provider should react to err. Unrecognised codes,
+// and non-Hetzner errors such as a dial timeout, are transient by design:
+// guessing "capacity" would suppress an offering that is fine, and "config"
+// would fail a NodeClaim that might have succeeded. Callers should count
+// unrecognised codes so new ones become visible.
 func Classify(err error) Class {
 	if err == nil {
 		return ClassNone

@@ -5,16 +5,12 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
-// Defaults matching the values these fields carry in their kubebuilder
-// markers. They are duplicated here deliberately, and the reason is not
-// belt-and-braces.
+// Defaults mirroring the kubebuilder markers on these fields.
 //
-// CRD defaulting only descends into a struct that is PRESENT in the submitted
-// object. A manifest that omits `spec.bootstrap.containerd` entirely never has
-// its apt pin applied, so the field stays empty rather than becoming
-// true. That is precisely the silent omission the default was chosen to make
-// impossible, so the Go accessors below are the real source of truth and the
-// markers are the documentation of them.
+// The duplication is deliberate: CRD defaulting only descends into a struct
+// that is PRESENT in the submitted object, so a manifest omitting
+// `spec.bootstrap.containerd` entirely never has its apt pin applied. The Go
+// accessors below are the source of truth; the markers document them.
 const (
 	DefaultContainerdAptPin = "2.*"
 	DefaultPackageRevision  = "1.1"
@@ -23,8 +19,8 @@ const (
 
 // DefaultKubeReserved and friends reproduce the reservations a node actually
 // runs with. Karpenter subtracts these when computing allocatable, so if they
-// ever disagree with what the kubelet is given, Karpenter overpacks every node
-// by the difference and pods sit Pending on nodes it believes have room.
+// disagree with what the kubelet is given it overpacks every node by the
+// difference and pods sit Pending on nodes it believes have room.
 func DefaultKubeReserved() corev1.ResourceList {
 	return corev1.ResourceList{
 		corev1.ResourceCPU:    resource.MustParse("200m"),
@@ -62,10 +58,8 @@ func (in *ContainerdSpec) SystemdCgroupEnabled() bool {
 	return *in.SystemdCgroup
 }
 
-// AptPinOrDefault returns the containerd.io apt version constraint. It holds
-// containerd within a major: unattended upgrades must patch it, but crossing a
-// major changes the CRI plugin configuration shape and breaks any additional
-// runtime handler wired into it.
+// AptPinOrDefault returns the containerd.io apt version constraint, holding
+// containerd within a major. See ContainerdSpec.AptPin for why.
 func (in *ContainerdSpec) AptPinOrDefault() string {
 	if in == nil || in.AptPin == "" {
 		return DefaultContainerdAptPin
@@ -99,8 +93,7 @@ func (in *BootstrapSpec) PackageRevisionOrDefault() string {
 }
 
 // PackageUpgradeOnBootEnabled reports whether cloud-init runs a full package
-// upgrade. It adds one to four minutes to every boot against core's hardcoded
-// 15-minute registration timeout.
+// upgrade. See BootstrapSpec.PackageUpgradeOnBoot for the trade it makes.
 func (in *BootstrapSpec) PackageUpgradeOnBootEnabled() bool {
 	if in == nil || in.PackageUpgradeOnBoot == nil {
 		return true
@@ -161,15 +154,10 @@ func (in *HCloudNodeClassSpec) PublicIPv6Enabled() bool {
 // ImageDriftPolicyOrDefault returns the image drift policy, defaulting to
 // Ignore.
 //
-// A Go accessor rather than CRD defaulting, for the same reason as the others
-// here: CRD defaults only apply to fields inside a struct that is PRESENT in
-// the submitted object, so a NodeClass that omits the field entirely never gets
-// one written back.
-//
-// Ignore is the right default and the safe one. Hetzner rebuilds its named
-// images every few weeks, so a name maps to a new id on Hetzner's schedule.
-// Defaulting to Replace would roll the entire fleet whenever they did that,
-// which is an outage the operator neither asked for nor could predict.
+// Ignore is the safe default: Hetzner rebuilds its named images every few
+// weeks, so a name maps to a new id on Hetzner's schedule, and Replace would
+// roll the entire fleet whenever they did, an outage the operator neither
+// asked for nor could predict.
 func (in *HCloudNodeClassSpec) ImageDriftPolicyOrDefault() ImageDriftPolicy {
 	if in == nil || in.ImageDriftPolicy == "" {
 		return ImageDriftPolicyIgnore

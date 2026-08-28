@@ -61,11 +61,10 @@ type JoinInput struct {
 // UnregisteredTaint is applied at registration and removed by Karpenter once
 // it has stamped its labels onto the Node.
 //
-// Rendering it is not optional. Without it, pods can be scheduled onto a node
-// in the window between the kubelet registering and Karpenter labelling it, so
-// Karpenter's bin-packing accounting is wrong from the first second. Karpenter
-// core logs an error and proceeds when it is missing, which makes the
-// consequence quiet rather than obvious.
+// Rendering it is not optional: without it, pods can be scheduled in the window
+// between the kubelet registering and Karpenter labelling the node, so
+// bin-packing accounting is wrong from the first second. Core logs an error and
+// proceeds when it is missing, which makes the consequence quiet.
 var UnregisteredTaint = corev1.Taint{
 	Key:    "karpenter.sh/unregistered",
 	Effect: corev1.TaintEffectNoExecute,
@@ -110,11 +109,10 @@ func renderJoinConfiguration(in JoinInput) (string, error) {
 
 // kubeletArgs builds nodeRegistration.kubeletExtraArgs.
 //
-// The reservations here MUST be the same values the instancetype package
-// subtracts as InstanceTypeOverhead. If they diverge, Karpenter's model of a
-// node and the node itself disagree, it over-packs by the difference, and
-// nothing reports it: pods simply sit Pending on a node the scheduler believes
-// has room. That is why both read from one KubeletConfiguration.
+// The reservations here MUST be the values the instancetype package subtracts
+// as InstanceTypeOverhead, which is why both read from one
+// KubeletConfiguration. If they diverge, Karpenter over-packs by the difference
+// and nothing reports it: pods sit Pending on a node believed to have room.
 func kubeletArgs(in JoinInput) []kubeletArg {
 	k := in.Kubelet
 	args := []kubeletArg{

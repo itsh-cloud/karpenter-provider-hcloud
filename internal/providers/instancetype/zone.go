@@ -3,56 +3,24 @@ package instancetype
 // LegacyDatacenterForLocation returns the value hcloud-CCM writes into
 // topology.kubernetes.io/zone for a server in this location.
 //
-// # Why this exists and why it is a hardcoded table
+// The zone must be declared and must be right. Karpenter prices a running node
+// by matching an offering against the node's zone label; with no match the
+// price resolves to 0, consolidation then filters replacements to those cheaper
+// than 0, finds none, and reports "Can't replace with a cheaper node" forever.
+// Leaving zone unconstrained does NOT avoid this: Requirements.Get on a missing
+// key returns an Exists requirement whose Any() is a RANDOM number.
 //
-// Karpenter core prices a running node with
-// InstanceType.OfferingPrice(node.Labels()["topology.kubernetes.io/zone"], ...),
-// which matches an Offering by its zone requirement. If no offering carries the
-// node's zone, the lookup fails, resolveNodePrice returns 0, and consolidation
-// then filters replacements to those cheaper than 0, i.e. none. The symptom is
-// core reporting "Can't replace with a cheaper node" for every candidate
-// forever, which silently removes the one capability this whole project exists
-// to gain: replacing a correctly-utilised but wrongly-typed node.
+// The table mirrors hcloud-cloud-controller-manager's
+// internal/legacydatacenter.NameFromLocation (v1.33.0). That function writes the
+// label and is a PURE FUNCTION OF THE LOCATION, never reading the server's real
+// datacenter, so the zone is predictable without an API call and an unknown
+// location maps to itself exactly as the CCM does.
 //
-// Leaving zone unconstrained does NOT avoid that. Requirements.Get on a missing
-// key returns an Exists requirement, and Any() on Exists returns a RANDOM
-// number, so Offering.Zone() yields a different nonsense string every call and
-// can never equal a real label.
-//
-// The table mirrors hcloud-cloud-controller-manager's own
-// internal/legacydatacenter.NameFromLocation (v1.33.0, unchanged on main). That
-// function is the authority here, because it is what actually writes the label,
-// and it is a PURE FUNCTION OF THE LOCATION: the CCM never reads the server's
-// real datacenter. So the zone is fully predictable, and this provider can
-// declare it without guessing.
-//
-// This is a deliberate reversal of the earlier decision to leave zone free,
-// which was made on the belief that the label reflected the datacenter Hetzner
-// happened to place the server in and therefore could not be predicted. It does
-// not, and it can.
-//
-// Deliberately NOT read from Hetzner's datacenters API: the entire Datacenter
-// type is removed after 2026-10-01, and this needs no API call at all.
-//
-// The default mirrors the CCM's: a location the table does not know maps to
-// itself, which is also what the CCM's comment promises for new locations.
-//
-// # The failure mode to watch, which is not this table going stale
-//
-// Upstream recommends DISABLING the zone label for new clusters, via
-// HCLOUD_INSTANCES_ZONE_LABEL_ENABLED=false, and plans to remove it in the next
-// major version. Either of those breaks the price lookup just as thoroughly as
-// a wrong value here, and neither is detectable by comparing tables.
-//
-// Note also that karpenter's registration does
-// node.Labels = lo.Assign(node.Labels, nodeClaim.Labels), so the NodeClaim's
-// labels WIN over the Node's. If the CCM label is ever disabled, nodes this
-// provider creates would still carry a zone while every other node would not,
-// which is the mixed cluster upstream's guide warns about.
-//
-// The thing worth alerting on is therefore the SYMPTOM, not this table: a node
-// whose topology.kubernetes.io/zone is absent or disagrees with this function
-// is exactly the state in which consolidation silently stops working.
+// The risk is not this table going stale. Upstream recommends disabling the
+// label (HCLOUD_INSTANCES_ZONE_LABEL_ENABLED=false) and plans to remove it,
+// which breaks the price lookup just as thoroughly as a wrong value here. Alert
+// on the symptom: a node whose zone label is absent or disagrees with this
+// function is the state in which consolidation silently stops working.
 func LegacyDatacenterForLocation(location string) string {
 	switch location {
 	case "nbg1":

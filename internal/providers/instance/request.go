@@ -17,14 +17,13 @@ const corev1RegionLabel = corev1.LabelTopologyRegion
 // candidate is being attempted.
 //
 // Built once and reused across the fall-through, which matters for the token:
-// the user data carries a live bootstrap token, and minting a fresh one per
-// attempt would leave a trail of valid cluster-join credentials for every
-// server type that happened to be out of stock.
+// minting a fresh one per attempt would leave a valid cluster-join credential
+// behind for every server type that happened to be out of stock.
 //
-// Every value comes from the NodeClass STATUS, never from its spec. The status
-// holds ids the NodeClass controllers already resolved and published, so a
-// create cannot race a selector that would resolve differently now, and a
-// NodeClass that has not resolved cannot order anything at all.
+// Every value comes from the NodeClass STATUS, never its spec. The status holds
+// ids the NodeClass controllers already resolved, so a create cannot race a
+// selector that would resolve differently now, and an unresolved NodeClass
+// cannot order anything at all.
 func (p *Provider) baseRequest(
 	nodeClass *v1alpha1.HCloudNodeClass,
 	nodeClaim *karpv1.NodeClaim,

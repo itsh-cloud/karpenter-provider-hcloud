@@ -15,7 +15,7 @@ import (
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/hcloudapi"
 )
 
-const testCluster = "itsh-prod"
+const testCluster = "test-cluster"
 
 var now = time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
 

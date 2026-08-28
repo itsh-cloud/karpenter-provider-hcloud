@@ -35,26 +35,23 @@ type HCloudNodeClassList struct {
 // HCloudNodeClassSpec is the desired shape of a node.
 //
 // Fields carrying `hash:"ignore"` are readable back from the Hetzner API on a
-// live server, so drift compares them directly against the server rather than
-// against a stored hash. Everything else is hashed, because hcloud will not
-// return it once the server exists: notably user_data (write-only) and
-// ssh_keys (absent from the server representation entirely).
+// live server, so drift compares them against the server rather than a stored
+// hash. Everything else is hashed, because hcloud will not return it once the
+// server exists: notably user_data (write-only) and ssh_keys (absent from the
+// server representation entirely).
 type HCloudNodeClassSpec struct {
-	// ImageSelector picks the base image. Exactly one of name or id.
-	//
-	// Name-based selection follows Hetzner's periodic image rebuilds; an id
-	// pins one build forever.
+	// ImageSelector picks the base image. Exactly one of name or id: a name
+	// follows Hetzner's periodic image rebuilds, an id pins one build forever.
 	//
 	// +kubebuilder:validation:Required
 	ImageSelector ImageSelectorTerm `json:"imageSelector" hash:"ignore"`
 
 	// ImageDriftPolicy controls whether a changed image ID drifts nodes.
 	//
-	// Defaults to Ignore, deliberately unlike some other providers. Hetzner
-	// rebuilds images such as debian-13 periodically and the ID changes each
-	// time; with Replace that rolls the entire fleet for no benefit, since the
-	// OS is fully reconfigured by apt at boot anyway. Set Replace only when
-	// pinning a custom snapshot you actually version.
+	// Defaults to Ignore, unlike some other providers: Hetzner rebuilds images
+	// such as debian-13 periodically and the ID changes each time, so Replace
+	// rolls the whole fleet for no benefit, apt having reconfigured the OS at
+	// boot anyway. Use Replace only when pinning a snapshot you version.
 	//
 	// +kubebuilder:validation:Enum=Ignore;Replace
 	// +kubebuilder:default=Ignore
@@ -62,12 +59,9 @@ type HCloudNodeClassSpec struct {
 	ImageDriftPolicy ImageDriftPolicy `json:"imageDriftPolicy,omitempty" hash:"ignore"`
 
 	// Locations bounds which Hetzner locations this class may use, e.g.
-	// [nbg1, fsn1]. Empty means every location in the network's zone.
-	//
-	// This is the infrastructure bound ("the private network reaches here").
-	// A NodePool's topology.kubernetes.io/region requirement is the policy
-	// bound ("this pool may use here"), and narrows it further. Both exist
-	// because they answer different questions.
+	// [nbg1, fsn1]. Empty means every location in the network's zone. This is
+	// the infrastructure bound; a NodePool's topology.kubernetes.io/region
+	// requirement is the policy bound and narrows it further.
 	//
 	// +kubebuilder:validation:MaxItems=10
 	// +kubebuilder:validation:items:Pattern=`^[a-z]{2,4}[0-9]$`
@@ -86,30 +80,24 @@ type HCloudNodeClassSpec struct {
 	// +optional
 	FirewallSelectors []FirewallSelectorTerm `json:"firewallSelectors,omitempty" hash:"ignore"`
 
-	// SSHKeySelectors picks SSH keys to install.
-	//
-	// Hashed rather than compared live, because hcloud does not return
-	// ssh_keys on a server GET.
+	// SSHKeySelectors picks SSH keys to install. Hashed rather than compared
+	// live, because hcloud does not return ssh_keys on a server GET.
 	//
 	// +kubebuilder:validation:MaxItems=10
 	// +optional
 	SSHKeySelectors []SSHKeySelectorTerm `json:"sshKeySelectors,omitempty"`
 
-	// PlacementGroup optionally puts nodes in a spread placement group.
-	//
-	// Unset by default, and that default is deliberate: Hetzner caps spread
-	// placement groups at 10 servers, and the eleventh create returns
-	// placement_error, which is indistinguishable from stock exhaustion and
-	// cannot be worked around by trying a different server type.
+	// PlacementGroup optionally puts nodes in a spread placement group. Unset
+	// by default, deliberately: Hetzner caps spread groups at 10 servers, and
+	// the eleventh create returns placement_error, indistinguishable from
+	// stock exhaustion and not fixable by trying a different server type.
 	//
 	// +optional
 	PlacementGroup *PlacementGroupSelectorTerm `json:"placementGroup,omitempty" hash:"ignore"`
 
-	// PublicIPv4 controls whether nodes get a primary IPv4.
-	//
-	// A primary IPv4 is billed separately, so disabling it saves money, but
-	// then nodes need egress via NAT to reach apt and registries. When false,
-	// the IPv4 surcharge is dropped from the offering price.
+	// PublicIPv4 controls whether nodes get a primary IPv4, billed separately.
+	// Without one, nodes need NAT egress to reach apt and registries. When
+	// false, the IPv4 surcharge is dropped from the offering price.
 	//
 	// +kubebuilder:default=true
 	// +optional
@@ -130,11 +118,10 @@ type HCloudNodeClassSpec struct {
 
 	// Kubelet is the authoritative source for kubelet reservations.
 	//
-	// These values feed BOTH the scheduling model (InstanceTypeOverhead, which
-	// is how Karpenter computes allocatable when bin-packing) AND the flags
-	// the kubelet actually runs with. They must be one field, because if the
-	// two diverge Karpenter overpacks every node by the difference and pods
-	// sit Pending on nodes it believes have room, with no alert for it.
+	// These feed BOTH the scheduling model (InstanceTypeOverhead, how Karpenter
+	// computes allocatable) AND the flags the kubelet runs with. One field,
+	// because if the two diverge Karpenter overpacks every node by the
+	// difference and pods sit Pending on nodes it believes have room.
 	//
 	// +optional
 	Kubelet KubeletConfiguration `json:"kubelet,omitempty"`
@@ -160,7 +147,6 @@ type ImageSelectorTerm struct {
 	// Name of the image, e.g. debian-13.
 	// +optional
 	Name string `json:"name,omitempty"`
-	// ID of the image.
 	// +optional
 	ID *int64 `json:"id,omitempty"`
 }
@@ -216,11 +202,9 @@ type KubeletConfiguration struct {
 	// +optional
 	SystemReserved corev1.ResourceList `json:"systemReserved,omitempty"`
 
-	// EvictionHard are the hard eviction thresholds.
-	//
-	// Note that --eviction-hard REPLACES kubelet's entire default map rather
-	// than merging into it, so omitting a signal that kubelet defaults to
-	// disables that signal entirely.
+	// EvictionHard are the hard eviction thresholds. --eviction-hard REPLACES
+	// kubelet's entire default map rather than merging into it, so omitting a
+	// signal that kubelet defaults to disables that signal entirely.
 	//
 	// +optional
 	EvictionHard map[string]string `json:"evictionHard,omitempty"`

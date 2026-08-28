@@ -19,25 +19,18 @@ import (
 )
 
 // terminationBlockedRequeue is how often a NodeClass held open by live
-// NodeClaims re-checks and re-publishes its event. The wait is indefinite by
-// design, so the interval only controls how often the explanation is refreshed.
+// NodeClaims re-checks and re-publishes its event. The wait itself is
+// indefinite, so this only controls how often the explanation is refreshed.
 const terminationBlockedRequeue = 10 * time.Minute
 
 // Termination releases an HCloudNodeClass once nothing references it.
 //
-// This entire path is provider-owned. Karpenter core declares no NodeClass
-// finalizer and ships no NodeClass termination controller, and it does not
-// cascade: deleting a NodeClass while NodeClaims reference it is, upstream, a
-// no-op that leaves those NodeClaims pointing at nothing. The only visible
-// effect is the NodePool going NodeClassReady=False/NodeClassTerminating, which
-// stops NEW provisioning while every existing node keeps running, keeps being
-// drift-evaluated and keeps being consolidated against a class that is gone.
-//
-// There is nothing provider-side to clean up here. This provider creates no
-// per-class Hetzner resource: networks, firewalls, ssh keys and placement
-// groups are all referenced, never owned. The per-NodeClaim bootstrap token
-// Secrets carry an ownerReference to their NodeClaim and are collected with it.
-// So the finalizer's whole job is the ordering gate.
+// Provider-owned entirely: core declares no NodeClass finalizer, ships no
+// termination controller and does not cascade, so upstream a deleted NodeClass
+// leaves its live NodeClaims pointing at nothing while their nodes keep running,
+// drifting and consolidating against a class that is gone. Nothing Hetzner-side
+// needs cleaning up (networks, firewalls, ssh keys and placement groups are
+// referenced, never owned), so the finalizer's whole job is the ordering gate.
 type Termination struct {
 	kubeClient client.Client
 	recorder   events.Recorder
@@ -55,18 +48,12 @@ func (t *Termination) Finalize(ctx context.Context, nodeClass *v1alpha1.HCloudNo
 		return reconcile.Result{}, nil
 	}
 
-	// A field-index lookup on the three spec.nodeClassRef indexes. An
-	// unregistered index ERRORS rather than returning an empty list, in both
-	// the real cache and the fake client, so a missing index cannot make this
-	// release the finalizer while NodeClaims still exist.
-	//
-	// The hazard is the opposite one. Core's setupIndexers fails OPEN when the
-	// NodeClaim CRD is absent at operator start: it logs and continues, leaving
-	// the index unregistered. Indexes are only registered at manager
-	// construction, so installing the CRD afterwards does not fix it, and this
-	// List then errors on every pass forever. A deleted HCloudNodeClass hangs
-	// on its finalizer until the operator is restarted or the finalizer is
-	// patched off by hand.
+	// An unregistered field index ERRORS rather than returning an empty list, so
+	// a missing index cannot make this release the finalizer while NodeClaims
+	// still exist. The hazard is the opposite one: core's setupIndexers fails
+	// OPEN when the NodeClaim CRD is absent at operator start, and indexes
+	// register only at manager construction, so this List then errors forever
+	// and a deleted HCloudNodeClass hangs until the operator is restarted.
 	nodeClaims := &karpv1.NodeClaimList{}
 	if err := t.kubeClient.List(ctx, nodeClaims, nodeclaimutils.ForNodeClass(nodeClass)); err != nil {
 		return reconcile.Result{}, fmt.Errorf("listing nodeclaims using nodeclass, %w", err)
@@ -79,9 +66,9 @@ func (t *Termination) Finalize(ctx context.Context, nodeClass *v1alpha1.HCloudNo
 		// Sorted so the event message does not change with list order.
 		sort.Strings(names)
 		t.recorder.Publish(WaitingOnNodeClaimTerminationEvent(nodeClass, names))
-		// Blocks indefinitely, on purpose. There is no safe timeout: releasing
-		// the class while nodes still reference it does not delete those nodes,
-		// it only removes the record of how they were built.
+		// Blocks indefinitely, on purpose: releasing the class while nodes
+		// still reference it does not delete those nodes, it only removes the
+		// record of how they were built.
 		return reconcile.Result{RequeueAfter: terminationBlockedRequeue}, nil
 	}
 

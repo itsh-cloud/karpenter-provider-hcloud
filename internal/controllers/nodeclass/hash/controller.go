@@ -28,9 +28,8 @@ const ControllerName = "nodeclass.hash"
 
 // Controller stamps the current spec hash onto the HCloudNodeClass.
 //
-// Deliberately separate from the status controller, because it writes METADATA
-// and the status controller writes the status subresource. Those are different
-// endpoints, so folding this into the status controller's single status patch
+// Separate from the status controller because it writes METADATA rather than
+// the status subresource: folding it into that controller's single status patch
 // would silently drop the annotation.
 type Controller struct {
 	kubeClient client.Client
@@ -53,16 +52,10 @@ func (c *Controller) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNo
 	stored := nodeClass.DeepCopy()
 
 	// The back-fill runs BEFORE the class's own annotation is rewritten, and
-	// that order is the entire mechanism that stops a controller upgrade from
-	// replacing the fleet.
-	//
-	// A changed hash generator produces a different hash for an unchanged spec.
-	// If the class were re-stamped first, every NodeClaim would be holding a
-	// hash computed by the old generator against a class holding one computed
-	// by the new, and drift would read that as "every node is out of date". So
-	// each NodeClaim is first given the NEW hash, computed from the same class,
-	// making the pair agree again under the new version, and only then is the
-	// class's own version annotation advanced.
+	// that order is what stops a controller upgrade from replacing the fleet: a
+	// changed generator produces a different hash for an unchanged spec, so
+	// re-stamping the class first would leave every NodeClaim holding an old
+	// hash against a new one, which drift reads as "every node is out of date".
 	if nodeClass.Annotations[v1alpha1.AnnotationHashVersion] != v1alpha1.HashVersion {
 		if err := c.backfillNodeClaimHashes(ctx, nodeClass); err != nil {
 			return reconcile.Result{}, err
@@ -101,21 +94,14 @@ func (c *Controller) backfillNodeClaimHashes(ctx context.Context, nodeClass *v1a
 		stored := nc.DeepCopy()
 		updates := map[string]string{v1alpha1.AnnotationHashVersion: v1alpha1.HashVersion}
 
-		// An already-drifted NodeClaim keeps its stale hash. It is already
-		// condemned and scheduled for replacement, and re-stamping it would
-		// un-drift it: the hash it holds was computed by the old generator, so
-		// there is no way to tell whether the reason it drifted still applies,
-		// and cancelling a replacement is the unrecoverable direction to guess
-		// wrong in.
+		// An already-drifted NodeClaim keeps its stale hash: it is condemned
+		// already, and re-stamping would un-drift it with no way to tell whether
+		// the reason still applies. Cancelling a replacement is the
+		// unrecoverable direction to guess wrong in.
 		//
-		// Read WithObservedOnly, because StatusConditions is a constructor
-		// rather than an accessor: without it, inspecting a NodeClaim
-		// fabricates Ready/Launched/Registered/Initialized as Unknown on the
-		// in-memory copy, which then defeats the diff guard below and sends a
-		// patch for a NodeClaim that needed none. The apiserver discards the
-		// status half (NodeClaim has a status subresource, and this is a patch
-		// to the main resource), so the cost is a wasted request per NodeClaim
-		// per back-fill rather than a corrupted status.
+		// WithObservedOnly because StatusConditions is a constructor: the plain
+		// form fabricates conditions as Unknown on the in-memory copy, which
+		// defeats the diff guard below and sends a patch that was not needed.
 		if nc.StatusConditions(status.WithObservedOnly()).Get(karpv1.ConditionTypeDrifted) == nil {
 			updates[v1alpha1.AnnotationHash] = hash
 		}
