@@ -6,8 +6,8 @@ type: application
 # Chart and app version move together: the chart templates the CRDs the binary
 # is compiled against, so a chart older or newer than its image can publish a
 # schema the controller cannot read.
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.1.1
+appVersion: "0.1.1"
 
 home: https://github.com/itsh-cloud/karpenter-provider-hcloud
 sources:
