@@ -86,6 +86,29 @@ func (c *listCache) list(ctx context.Context, selector string) ([]*hcloudapi.Ser
 	return v.([]*hcloudapi.Server), nil
 }
 
+// get answers from the cached listing, and reports whether it could answer.
+//
+// A miss is not an answer: the caller must fall through to a point read.
+// Absence from the listing only means the listing predates the server, but
+// Provider.Get's nil is read as "gone, or not ours", and core's termination
+// controller drops the Node's finalizer on it, skipping the drain. So only a
+// positive hit is served; a stale cache and an absent id both return false.
+//
+// The Server points into the cached slice and is shared. Do not mutate it.
+func (c *listCache) get(id int64) (*hcloudapi.Server, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.cached == nil || c.now().Sub(c.fetchedAt) >= c.ttl {
+		return nil, false
+	}
+	for _, srv := range c.cached {
+		if srv != nil && srv.ID == id {
+			return srv, true
+		}
+	}
+	return nil, false
+}
+
 // invalidate drops the cached listing.
 //
 // Called after this provider creates or deletes a server, so the very next
@@ -124,14 +147,27 @@ func (p *Provider) List(ctx context.Context) ([]*hcloudapi.Server, error) {
 }
 
 // Get returns one server by provider id, or nil if it is gone.
+//
+// Served from the list cache when it holds the id. Drift calls this once per
+// NodeClaim per reconcile and its controller watches Pods unfiltered, so on a
+// busy cluster it runs well above the 5-minute floor, against a Hetzner budget
+// of 3600 requests/hour shared by every client in the project. A rate-limited
+// call is worse than it looks: hcloud-go retries it five times by default.
+//
+// A hit is the same struct a point read builds (both map through
+// serverFromHcloud) and carries every field serverDrift reads, so it is older
+// rather than weaker. Within the TTL a server changed INTO conformance can
+// still read as drifted, which costs a replacement.
 func (p *Provider) Get(ctx context.Context, providerID string) (*hcloudapi.Server, error) {
 	id, err := hcloudapi.ServerIDFromProviderID(providerID)
 	if err != nil {
 		return nil, err
 	}
-	srv, err := p.servers.Get(ctx, id)
-	if err != nil {
-		return nil, err
+	srv, ok := p.cache.get(id)
+	if !ok {
+		if srv, err = p.servers.Get(ctx, id); err != nil {
+			return nil, err
+		}
 	}
 	if srv == nil {
 		return nil, nil
@@ -147,11 +183,14 @@ func (p *Provider) Get(ctx context.Context, providerID string) (*hcloudapi.Serve
 
 // Delete removes the server behind a provider id.
 //
-// The ownership check is the single most important line in this provider. The
-// blast radius of getting it wrong is deleting the control plane, whose servers
-// are created by terraform and genuinely carry no karpenter label. It fails
-// closed: no labels, no label key, or an empty cluster name all mean "not
-// ours".
+// The ownership check is the single most important line in this provider: the
+// blast radius of getting it wrong is deleting the control plane. Servers this
+// provider did not create carry no karpenter label, which is what makes the
+// check meaningful. It fails closed, so no labels, no label key, or an empty
+// cluster name all mean "not ours".
+//
+// The read below deliberately skips the list cache, unlike Get: this is the
+// ownership gate in front of a destructive call, so it reads live state.
 func (p *Provider) Delete(ctx context.Context, providerID string) error {
 	id, err := hcloudapi.ServerIDFromProviderID(providerID)
 	if err != nil {

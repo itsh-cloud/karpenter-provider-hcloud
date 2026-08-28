@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
 	corev1 "k8s.io/api/core/v1"
@@ -21,7 +22,7 @@ import (
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/providers/instancetype"
 )
 
-const testCluster = "itsh-prod"
+const testCluster = "test-cluster"
 
 // fakeServers records every create and can be scripted to fail per attempt.
 type fakeServers struct {
@@ -33,8 +34,15 @@ type fakeServers struct {
 	listed   []*hcloudapi.Server
 	listErr  error
 	listCall int
+	getCall  int
 	deleted  []int64
 	nextID   int64
+}
+
+func (f *fakeServers) getCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.getCall
 }
 
 func newFakeServers() *fakeServers {
@@ -75,6 +83,7 @@ func (f *fakeServers) Delete(_ context.Context, id int64) error {
 func (f *fakeServers) Get(_ context.Context, id int64) (*hcloudapi.Server, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.getCall++
 	return f.byID[id], nil
 }
 
@@ -492,7 +501,7 @@ func TestOneTokenPerCreateNotPerAttempt(t *testing.T) {
 
 func TestDeleteRefusesUnmanagedServers(t *testing.T) {
 	f := newFakeServers()
-	// A control plane node: created by terraform, so genuinely unlabelled.
+	// A control plane node, not created by this provider, so genuinely unlabelled.
 	f.byID[1] = &hcloudapi.Server{ID: 1, Name: "k8s-node-1"}
 	p := NewProvider(f, instancetype.NewUnavailable(), testCluster)
 
@@ -858,4 +867,194 @@ func TestAdoptedServerReportsItsOwnType(t *testing.T) {
 		t.Errorf("returned instance type %q for an adopted cx43; core never re-reads capacity from the Node, "+
 			"so every future pod would be binpacked against the wrong machine", name)
 	}
+}
+
+// ownedServer is a server carrying this cluster's ownership label.
+func ownedServer(id int64, name string) *hcloudapi.Server {
+	return &hcloudapi.Server{
+		ID: id, Name: name, ServerType: "cx43", Location: "nbg1", Status: "running",
+		Labels: map[string]string{hcloudapi.LabelManagedBy: testCluster},
+	}
+}
+
+// TestGetIsServedFromTheListCache: drift calls Get once per NodeClaim per
+// reconcile, which is a real share of Hetzner's 3600 requests/hour per project.
+func TestGetIsServedFromTheListCache(t *testing.T) {
+	f := newFakeServers()
+	srv := ownedServer(7, "autoscaled-general-nbg1-aaaaa")
+	f.listed = []*hcloudapi.Server{srv}
+	f.byID[7] = srv
+	p := NewProvider(f, instancetype.NewUnavailable(), testCluster)
+
+	if _, err := p.List(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	before := f.getCalls()
+
+	got, err := p.Get(context.Background(), "hcloud://7")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got == nil || got.ID != 7 {
+		t.Fatalf("Get = %+v, want the server with id 7", got)
+	}
+	if f.getCalls() != before {
+		t.Errorf("Get went to the API for a server the warm listing already held (%d calls)", f.getCalls()-before)
+	}
+}
+
+// TestGetFallsThroughToTheApiOnCacheMiss: a miss must never read as absence.
+// Get's nil drops the Node's finalizer and skips the drain, so concluding it
+// from a listing that merely predates the server strands that node's pods.
+func TestGetFallsThroughToTheApiOnCacheMiss(t *testing.T) {
+	f := newFakeServers()
+	f.listed = []*hcloudapi.Server{ownedServer(7, "already-known")}
+	// Present upstream, absent from the warm listing: exactly the just-created
+	// server whose listing has not caught up.
+	f.byID[9] = ownedServer(9, "created-after-the-listing")
+	p := NewProvider(f, instancetype.NewUnavailable(), testCluster)
+
+	if _, err := p.List(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := p.Get(context.Background(), "hcloud://9")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got == nil {
+		t.Fatal("Get reported a live server as gone because it was missing from a stale listing; termination would drop its finalizer undrained")
+	}
+	if f.getCalls() == 0 {
+		t.Error("Get answered from the cache without a point read, so absence was inferred from the listing")
+	}
+}
+
+// TestGetFallsThroughWhenTheCacheIsStale.
+//
+// Past the TTL the listing is not an answer, even for an id it contains.
+func TestGetFallsThroughWhenTheCacheIsStale(t *testing.T) {
+	f := newFakeServers()
+	srv := ownedServer(7, "autoscaled-general-nbg1-aaaaa")
+	f.listed = []*hcloudapi.Server{srv}
+	f.byID[7] = srv
+	p := NewProvider(f, instancetype.NewUnavailable(), testCluster)
+
+	now := time.Now()
+	p.cache = newListCache(f, DefaultListTTL, func() time.Time { return now })
+	if _, err := p.List(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	before := f.getCalls()
+
+	now = now.Add(DefaultListTTL + time.Second)
+	if _, err := p.Get(context.Background(), "hcloud://7"); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if f.getCalls() == before {
+		t.Error("Get served an expired listing")
+	}
+}
+
+// TestGetHidesUnmanagedServersFromTheCache: the cache stores the raw listing,
+// before List's ownership filter, so the cached path must re-check too.
+func TestGetHidesUnmanagedServersFromTheCache(t *testing.T) {
+	f := newFakeServers()
+	unowned := &hcloudapi.Server{ID: 3, Name: "k8s-node-2"}
+	f.listed = []*hcloudapi.Server{unowned}
+	f.byID[3] = unowned
+	p := NewProvider(f, instancetype.NewUnavailable(), testCluster)
+
+	if _, err := p.List(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := p.Get(context.Background(), "hcloud://3")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got != nil {
+		t.Errorf("Get returned an unowned server %+v from the cache", got)
+	}
+}
+
+// TestDeleteDoesNotUseTheListCache: the ownership gate in front of a
+// destructive call reads live state, since labels can change out of band.
+func TestDeleteDoesNotUseTheListCache(t *testing.T) {
+	f := newFakeServers()
+	srv := ownedServer(7, "autoscaled-general-nbg1-aaaaa")
+	f.listed = []*hcloudapi.Server{srv}
+	f.byID[7] = srv
+	p := NewProvider(f, instancetype.NewUnavailable(), testCluster)
+
+	if _, err := p.List(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	before := f.getCalls()
+
+	if err := p.Delete(context.Background(), "hcloud://7"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if f.getCalls() == before {
+		t.Error("Delete gated a destructive call on a cached listing rather than live state")
+	}
+}
+
+// TestGetReportsGenuineAbsence: the other half of the invariant. A warm cache
+// must not stop Get reporting a server that really is gone.
+func TestGetReportsGenuineAbsence(t *testing.T) {
+	f := newFakeServers()
+	f.listed = []*hcloudapi.Server{ownedServer(7, "still-here")}
+	p := NewProvider(f, instancetype.NewUnavailable(), testCluster)
+
+	if _, err := p.List(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := p.Get(context.Background(), "hcloud://9")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got != nil {
+		t.Errorf("Get = %+v for a server that exists nowhere, want nil", got)
+	}
+	if f.getCalls() == 0 {
+		t.Error("Get concluded absence from the cache without a point read")
+	}
+}
+
+// TestGetIsSafeUnderConcurrentListAndInvalidate: get walks the shared slice, so
+// it must hold the read lock while list replaces it and invalidate nils it.
+// Nothing else exercises get concurrently, so a dropped RLock would go unseen.
+func TestGetIsSafeUnderConcurrentListAndInvalidate(t *testing.T) {
+	f := newFakeServers()
+	srv := ownedServer(7, "autoscaled-general-nbg1-aaaaa")
+	f.listed = []*hcloudapi.Server{srv}
+	f.byID[7] = srv
+	p := NewProvider(f, instancetype.NewUnavailable(), testCluster)
+
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			for range 300 {
+				_, _ = p.List(ctx)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for range 300 {
+				_, _ = p.Get(ctx, "hcloud://7")
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for range 300 {
+				p.cache.invalidate()
+			}
+		}()
+	}
+	wg.Wait()
 }
