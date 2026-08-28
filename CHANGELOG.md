@@ -7,6 +7,21 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-28
+
+### Fixed
+
+- `Get` is served from the existing 30s list cache instead of calling the Hetzner API every
+  time. Drift calls it once per NodeClaim per reconcile and its controller watches Pods
+  unfiltered, so on a busy cluster this was a large share of the 3600 requests/hour a project
+  allows. A cache miss still reads live, because absence from a listing is not absence of the
+  server.
+
+### Changed
+
+- Comment prose trimmed throughout, and values specific to one operator removed from the debug
+  default and the tests.
+
 ## [0.1.0] - 2026-08-16
 
 First release. The provider provisions, replaces and terminates nodes against a real cluster
