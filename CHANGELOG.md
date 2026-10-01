@@ -7,6 +7,35 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `spec.maxNodeAge` on HCloudNodeClass. A node whose NodeClaim is older than it drifts with
+  reason `NodeAgeDrift`, so nodes are replaced on a schedule inside the disruption budget and
+  respecting PodDisruptionBudgets, which a NodePool's `expireAfter` does not. Unset by default,
+  minimum `1h`. It is not part of the spec hash, so setting it does not roll the fleet by
+  itself, but nodes already older than the new value drift together and the budget paces them.
+- Hetzner API request metrics from hcloud-go: `hcloud_api_requests_total` (by code, method and
+  endpoint, each retry counted), `hcloud_api_request_duration_seconds` and
+  `hcloud_api_in_flight_requests`. A non-zero `code="429"` rate is the rate limit being hit.
+
+### Fixed
+
+- A stale list cache no longer sends `Get` to the API once per server. Past the 30s TTL, every
+  NodeClaim's drift check read its server individually, which on a busy cluster still
+  exhausted the rate limit. `Get` now refreshes the listing through the same single
+  flight `List` uses, so a drift pass costs one listing, and a failed listing is returned as an
+  error rather than retried per server. That shared listing now has its own 60s deadline, and a
+  caller whose context ends stops waiting without cancelling it for the others.
+- The Hetzner API token is redacted from errors. Hetzner's rate-limit message quotes the first
+  half of the token, and it reached logs, events, NodeClaim errors and NodeClass conditions.
+  The token is now removed from Hetzner's message text by value, whatever the wording, and
+  errors no longer carry the HTTP response, whose request holds the token in full.
+- Nodes run the kernel the boot-time package upgrade installed. With `packageUpgradeOnBoot`
+  (the default), cloud-init now reboots before joining when the upgrade requires it, where a
+  new node used to run the image's older kernel with a reboot pending for its whole life. Boots
+  that take the reboot are about a minute longer. The change is in rendered user data, not the
+  spec hash, so it drifts no existing node.
+
 ## [0.1.1] - 2026-08-28
 
 ### Fixed
