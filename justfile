@@ -70,7 +70,7 @@ _stamp-chart-crds:
 _vendor-karpenter-crds:
     #!/usr/bin/env bash
     set -euo pipefail
-    ver=$(go list -m -f '{{{{.Version}}}}' sigs.k8s.io/karpenter)
+    ver=$(go list -m -f '{{{{.Version}}' sigs.k8s.io/karpenter)
     src="$(go env GOMODCACHE)/sigs.k8s.io/karpenter@${ver}/pkg/apis/crds"
     echo "vendoring karpenter.sh CRDs from ${src}"
     cp "${src}/karpenter.sh_nodepools.yaml" "${src}/karpenter.sh_nodeclaims.yaml" config/crd/
