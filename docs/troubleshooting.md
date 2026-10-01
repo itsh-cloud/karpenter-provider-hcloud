@@ -133,7 +133,13 @@ karpenter_hcloud_offering_published_available  # what Hetzner CLAIMS about the s
 karpenter_hcloud_launch_failures_total         # by server type, location and error class
 karpenter_hcloud_launch_duration_seconds       # includes fall-through, so the slow case is visible
 karpenter_hcloud_catalog_stale                 # 1 when the last refresh failed
+hcloud_api_requests_total                      # every Hetzner API request, retries included, by code, method and api_endpoint
+hcloud_api_request_duration_seconds            # request latency by method
 ```
+
+`hcloud_api_requests_total{code="429"}` is the rate limit being hit. Hetzner documents the
+3600 requests/hour limit per project; the 429 message names the token. Requests by other
+clients are not counted here.
 
 The two `offering_*` series are deliberately separate. Hetzner's published availability flag
 is neither sufficient nor necessary: types reported unavailable have been ordered

@@ -3,8 +3,9 @@
 //
 // Every series here has a writer, and that is the rule. A gauge nothing writes
 // scrapes as a permanent zero, and for a rate limit zero reads as FULLY
-// THROTTLED, so request counts, in-flight depth and the remaining rate limit
-// stay undeclared until something wires them.
+// THROTTLED, so the remaining rate limit stays undeclared until something wires
+// it. Request counts, latency and in-flight depth are hcloud-go's own
+// hcloud_api_* series, wired in hcloudapi.NewClientFromEnv.
 package metrics
 
 import (

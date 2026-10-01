@@ -3,6 +3,8 @@ package hcloudapi
 import (
 	"strings"
 	"testing"
+
+	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
 const goodToken = "abcdefghij0123456789ABCDEFGHIJabcdefghij0123456789ABCDEFGHIJ0123"
@@ -61,4 +63,23 @@ func TestTokenLengthMatchesHetzner(t *testing.T) {
 	if len(goodToken) != tokenLength {
 		t.Fatalf("test fixture is %d characters, not %d", len(goodToken), tokenLength)
 	}
+}
+
+// TestClientIsInstrumented: the rate-limit alert reads hcloud_api_requests_total,
+// so a client built without instrumentation silences it rather than failing.
+func TestClientIsInstrumented(t *testing.T) {
+	t.Setenv(TokenEnvVar, goodToken)
+	if _, err := NewClientFromEnv(); err != nil {
+		t.Fatalf("NewClientFromEnv: %v", err)
+	}
+	families, err := crmetrics.Registry.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	for _, mf := range families {
+		if mf.GetName() == "hcloud_api_in_flight_requests" {
+			return
+		}
+	}
+	t.Error("no hcloud_api_* series on the controller-runtime registry")
 }

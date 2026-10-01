@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
+	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
 // TokenEnvVar is where the Hetzner Cloud API token is read from. Environment
@@ -56,6 +57,9 @@ func NewClientFromEnv() (*hcloud.Client, error) {
 		hcloud.WithToken(token),
 		hcloud.WithApplication("karpenter-provider-hcloud", Version),
 		hcloud.WithPollOpts(hcloud.PollOpts{BackoffFunc: hcloud.ConstantBackoff(pollInterval)}),
+		// controller-runtime's registry, which the metrics port serves, so the
+		// hcloud_api_* series sit next to core's and this provider's own.
+		hcloud.WithInstrumentation(crmetrics.Registry),
 	), nil
 }
 

@@ -6,6 +6,7 @@ require (
 	github.com/awslabs/operatorpkg v0.0.0-20260708223819-4da4c353c5fa
 	github.com/hetznercloud/hcloud-go/v2 v2.47.0
 	github.com/mitchellh/hashstructure/v2 v2.0.2
+	github.com/prometheus/client_golang v1.23.2
 	github.com/samber/lo v1.53.0
 	go.uber.org/multierr v1.11.0
 	golang.org/x/sync v0.22.0
@@ -58,7 +59,6 @@ require (
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/patrickmn/go-cache v2.1.0+incompatible // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	github.com/prometheus/client_golang v1.23.2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.4 // indirect
 	github.com/prometheus/procfs v0.19.2 // indirect
