@@ -16,6 +16,7 @@ const goodToken = "abcdefghij0123456789ABCDEFGHIJabcdefghij0123456789ABCDEFGHIJ0
 // Classify treats as transient, so the provider retries forever with nothing on
 // any NodeClass saying why. The trailing-newline case is the common one.
 func TestNewClientFromEnvValidatesTheToken(t *testing.T) {
+	useToken(t, "")
 	for _, tc := range []struct {
 		name    string
 		token   string
@@ -68,6 +69,7 @@ func TestTokenLengthMatchesHetzner(t *testing.T) {
 // TestClientIsInstrumented: the rate-limit alert reads hcloud_api_requests_total,
 // so a client built without instrumentation silences it rather than failing.
 func TestClientIsInstrumented(t *testing.T) {
+	useToken(t, "")
 	t.Setenv(TokenEnvVar, goodToken)
 	if _, err := NewClientFromEnv(); err != nil {
 		t.Fatalf("NewClientFromEnv: %v", err)

@@ -105,7 +105,7 @@ func lookup[T any](
 		found, _, err = byName(ctx, name)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("resolving %s %q: %w", kind, sel, err)
+		return nil, fmt.Errorf("resolving %s %q: %w", kind, sel, redact(err))
 	}
 	if found == nil {
 		return nil, &NotFoundError{Kind: kind, Selector: sel}

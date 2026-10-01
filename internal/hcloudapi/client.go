@@ -11,9 +11,9 @@ import (
 )
 
 // TokenEnvVar is where the Hetzner Cloud API token is read from. Environment
-// rather than a file or a flag: the chart projects it from a Secret with
-// envFrom, so it never lands on disk, in the pod spec, in an argv the whole
-// node can read from /proc, or in the logs.
+// rather than a file or a flag: the chart sets it from a Secret with a
+// secretKeyRef, so it never lands on disk, in the pod spec, in an argv the
+// whole node can read from /proc, or in the logs.
 const TokenEnvVar = "HCLOUD_TOKEN"
 
 // tokenLength is the fixed width of a Hetzner Cloud API token. Checked so that
@@ -52,6 +52,7 @@ func NewClientFromEnv() (*hcloud.Client, error) {
 		return nil, fmt.Errorf("%s contains a non-alphanumeric character at position %d; check the secret for a newline or a copied-in quote",
 			TokenEnvVar, idx)
 	}
+	apiToken.Store(&token)
 
 	return hcloud.NewClient(
 		hcloud.WithToken(token),

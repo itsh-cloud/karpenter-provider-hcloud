@@ -162,7 +162,7 @@ func (s *serverClient) Create(ctx context.Context, req CreateServerRequest) (*Se
 
 	result, _, err := s.c.Server.Create(ctx, opts)
 	if err != nil {
-		return nil, fmt.Errorf("creating server %q: %w", req.Name, err)
+		return nil, fmt.Errorf("creating server %q: %w", req.Name, redact(err))
 	}
 	if result.Server == nil {
 		return nil, fmt.Errorf("creating server %q: hetzner returned no server", req.Name)
@@ -179,7 +179,7 @@ func (s *serverClient) Create(ctx context.Context, req CreateServerRequest) (*Se
 	actions := append([]*hcloud.Action{result.Action}, result.NextActions...)
 	if err := s.c.Action.WaitFor(waitCtx, actions...); err != nil {
 		s.deleteQuietly(context.WithoutCancel(ctx), result.Server.ID, req.Name)
-		return nil, fmt.Errorf("waiting for server %q to be created: %w", req.Name, err)
+		return nil, fmt.Errorf("waiting for server %q to be created: %w", req.Name, redact(err))
 	}
 
 	// Re-read rather than trusting the create response: the private IP is
@@ -206,7 +206,7 @@ func (s *serverClient) deleteQuietly(ctx context.Context, id int64, name string)
 		// Never quiet about this: a failed cleanup leaves a running, billing
 		// server that booted with a valid join token, so it registers as a Node
 		// with no NodeClaim behind it, and nothing else reports it.
-		log.FromContext(ctx).Error(err, "FAILED to remove the leftover server after a failed create; "+
+		log.FromContext(ctx).Error(redact(err), "FAILED to remove the leftover server after a failed create; "+
 			"it is still running and will join the cluster unowned",
 			"server", name, "id", id)
 	}
@@ -221,7 +221,7 @@ func (s *serverClient) Delete(ctx context.Context, id int64) error {
 		if hcloud.IsError(err, hcloud.ErrorCodeNotFound) {
 			return &NotFoundError{Kind: "server", Selector: fmt.Sprint(id)}
 		}
-		return fmt.Errorf("deleting server %d: %w", id, err)
+		return fmt.Errorf("deleting server %d: %w", id, redact(err))
 	}
 	return nil
 }
@@ -229,7 +229,7 @@ func (s *serverClient) Delete(ctx context.Context, id int64) error {
 func (s *serverClient) Get(ctx context.Context, id int64) (*Server, error) {
 	srv, _, err := s.c.Server.GetByID(ctx, id)
 	if err != nil {
-		return nil, fmt.Errorf("getting server %d: %w", id, err)
+		return nil, fmt.Errorf("getting server %d: %w", id, redact(err))
 	}
 	if srv == nil {
 		return nil, nil
@@ -240,7 +240,7 @@ func (s *serverClient) Get(ctx context.Context, id int64) (*Server, error) {
 func (s *serverClient) GetByName(ctx context.Context, name string) (*Server, error) {
 	srv, _, err := s.c.Server.GetByName(ctx, name)
 	if err != nil {
-		return nil, fmt.Errorf("getting server %q: %w", name, err)
+		return nil, fmt.Errorf("getting server %q: %w", name, redact(err))
 	}
 	if srv == nil {
 		return nil, nil
@@ -253,7 +253,7 @@ func (s *serverClient) List(ctx context.Context, labelSelector string) ([]*Serve
 		ListOpts: hcloud.ListOpts{LabelSelector: labelSelector},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("listing servers %q: %w", labelSelector, err)
+		return nil, fmt.Errorf("listing servers %q: %w", labelSelector, redact(err))
 	}
 	out := make([]*Server, 0, len(srvs))
 	for _, srv := range srvs {

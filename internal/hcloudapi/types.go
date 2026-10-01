@@ -102,7 +102,7 @@ func NewCatalog(c *hcloud.Client) Catalog { return &catalogClient{c: c} }
 func (a *catalogClient) networkZones(ctx context.Context) (map[string]string, error) {
 	locs, err := a.c.Location.All(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("listing locations: %w", err)
+		return nil, fmt.Errorf("listing locations: %w", redact(err))
 	}
 	zones := make(map[string]string, len(locs))
 	for _, l := range locs {
@@ -117,7 +117,7 @@ func (a *catalogClient) networkZones(ctx context.Context) (map[string]string, er
 func (a *catalogClient) ServerTypes(ctx context.Context) ([]ServerType, error) {
 	sts, err := a.c.ServerType.All(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("listing server types: %w", err)
+		return nil, fmt.Errorf("listing server types: %w", redact(err))
 	}
 
 	// The network zone has to come from /v1/locations, and joining it in here
@@ -184,7 +184,7 @@ func (a *catalogClient) ServerTypes(ctx context.Context) ([]ServerType, error) {
 func (a *catalogClient) PrimaryIPv4MonthlyNet(ctx context.Context) (float64, error) {
 	pricing, _, err := a.c.Pricing.Get(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("getting pricing: %w", err)
+		return 0, fmt.Errorf("getting pricing: %w", redact(err))
 	}
 	for _, p := range pricing.PrimaryIPs {
 		if p.Type != "ipv4" {
