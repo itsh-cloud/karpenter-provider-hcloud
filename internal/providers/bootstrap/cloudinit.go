@@ -30,11 +30,12 @@ const (
 // YAML would let a NodeClass break out of its content block and rewrite the
 // rest of the document, join configuration included.
 type cloudConfig struct {
-	PackageUpdate  bool        `json:"package_update"`
-	PackageUpgrade bool        `json:"package_upgrade"`
-	Packages       []string    `json:"packages,omitempty"`
-	WriteFiles     []writeFile `json:"write_files,omitempty"`
-	Runcmd         []string    `json:"runcmd,omitempty"`
+	PackageUpdate           bool        `json:"package_update"`
+	PackageUpgrade          bool        `json:"package_upgrade"`
+	PackageRebootIfRequired bool        `json:"package_reboot_if_required,omitempty"`
+	Packages                []string    `json:"packages,omitempty"`
+	WriteFiles              []writeFile `json:"write_files,omitempty"`
+	Runcmd                  []string    `json:"runcmd,omitempty"`
 }
 
 type writeFile struct {
@@ -73,9 +74,15 @@ func Render(in Input) (string, error) {
 	}
 	pkgVersion := boot.KubernetesVersion + "-" + boot.PackageRevisionOrDefault()
 
+	upgrade := boot.PackageUpgradeOnBootEnabled()
 	cfg := cloudConfig{
 		PackageUpdate:  true,
-		PackageUpgrade: boot.PackageUpgradeOnBootEnabled(),
+		PackageUpgrade: upgrade,
+		// Without the reboot an upgraded kernel is installed but never run.
+		// cloud-init records the package module as done before running it, so
+		// after the reboot it is skipped, and the later scripts-user stage
+		// (runcmd, and with it the join) runs once, on the new kernel.
+		PackageRebootIfRequired: upgrade,
 		Packages: dedupe(append([]string{
 			"apt-transport-https", "curl", "gnupg", "ca-certificates",
 			"unattended-upgrades", "containernetworking-plugins", "nfs-common",

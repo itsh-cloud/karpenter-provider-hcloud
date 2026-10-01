@@ -184,11 +184,13 @@ spec:
                   packageUpgradeOnBoot:
                     default: true
                     description: |-
-                      PackageUpgradeOnBoot runs a full package upgrade during cloud-init. It
-                      adds one to four minutes to every boot and depends on mirror speed,
-                      against karpenter core's hardcoded 15-minute registration timeout, so a
-                      slow mirror day can produce a replacement loop. The durable fix is a
-                      prebuilt image; this is the lever until then.
+                      PackageUpgradeOnBoot runs a full package upgrade during cloud-init and,
+                      when the upgrade asks for one, reboots before joining, so a new kernel is
+                      the one the node runs. It adds one to four minutes to every boot, plus
+                      about one for the reboot, and depends on mirror speed, against karpenter
+                      core's hardcoded 15-minute registration timeout, so a slow mirror day can
+                      produce a replacement loop. The durable fix is a prebuilt image; this is
+                      the lever until then.
                     type: boolean
                   postJoinCommands:
                     description: PostJoinCommands run after a successful kubeadm join.

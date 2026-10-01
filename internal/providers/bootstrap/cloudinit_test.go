@@ -305,6 +305,25 @@ func TestAptRepoStreamFollowsMinorVersion(t *testing.T) {
 	}
 }
 
+// TestRebootFollowsThePackageUpgrade: an upgrade without the reboot leaves a
+// new kernel installed and the old one running, for the life of the node.
+func TestRebootFollowsThePackageUpgrade(t *testing.T) {
+	for _, upgrade := range []bool{true, false} {
+		in := testInput()
+		in.NodeClass.Spec.Bootstrap.PackageUpgradeOnBoot = &upgrade
+
+		out, cfg := render(t, in)
+
+		if cfg.PackageUpgrade != upgrade || cfg.PackageRebootIfRequired != upgrade {
+			t.Errorf("packageUpgradeOnBoot=%v rendered package_upgrade=%v, package_reboot_if_required=%v",
+				upgrade, cfg.PackageUpgrade, cfg.PackageRebootIfRequired)
+		}
+		if got := strings.Contains(out, "package_reboot_if_required"); got != upgrade {
+			t.Errorf("packageUpgradeOnBoot=%v: package_reboot_if_required present = %v", upgrade, got)
+		}
+	}
+}
+
 func TestRejectsUnsupportedOSFamily(t *testing.T) {
 	in := testInput()
 	in.NodeClass.Spec.Bootstrap.OSFamily = "Ubuntu"

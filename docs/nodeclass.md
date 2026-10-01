@@ -59,6 +59,7 @@ truth for kubelet reservations possible.
 |---|---|
 | `kubernetesVersion` | Required, full version, e.g. `1.34.7`. |
 | `packageRevision` | Debian revision suffix. Pin it to make a build reproducible. |
+| `packageUpgradeOnBoot` | Default `true`. Upgrades every package at boot and, when the upgrade needs it, reboots before joining, so the node runs the kernel it installed. Costs a few minutes of boot time against core's 15-minute registration timeout. |
 | `extraPackages`, `kernelModules`, `sysctls`, `extraFiles` | The escape hatches. `extraFiles` are written before `runcmd`, so they can configure something a later command uses. |
 | `preJoinCommands`, `postJoinCommands` | Run around `kubeadm join`. |
 | `apiServerEndpoint`, `caCertHashes` | Override discovery. Set **both** or neither: half a pair produces a server that boots and never joins. Normally read from the `kube-public/cluster-info` ConfigMap. |
