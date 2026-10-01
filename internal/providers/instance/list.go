@@ -2,10 +2,13 @@ package instance
 
 import (
 	"context"
+	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 
 	"golang.org/x/sync/singleflight"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/itsh-cloud/karpenter-provider-hcloud/internal/hcloudapi"
 )
@@ -23,10 +26,17 @@ import (
 // extra pass before an orphan is noticed.
 const DefaultListTTL = 30 * time.Second
 
+// listTimeout bounds one shared listing. Neither hcloud-go's HTTP client nor
+// core's reconcilers set a deadline, so without it one hung request would
+// hold drift, termination and garbage collection behind it. Sixty seconds
+// clears the roughly 31s hcloud-go can spend backing off between retries.
+const listTimeout = 60 * time.Second
+
 // listCache serves one recent server listing to every caller.
 type listCache struct {
 	servers hcloudapi.Servers
 	ttl     time.Duration
+	timeout time.Duration
 	now     func() time.Time
 
 	// group collapses concurrent misses into ONE upstream call. Without it,
@@ -46,7 +56,7 @@ func newListCache(servers hcloudapi.Servers, ttl time.Duration, now func() time.
 	if now == nil {
 		now = time.Now
 	}
-	return &listCache{servers: servers, ttl: ttl, now: now}
+	return &listCache{servers: servers, ttl: ttl, timeout: listTimeout, now: now}
 }
 
 // list returns the servers matching selector, from cache when fresh.
@@ -59,7 +69,17 @@ func (c *listCache) list(ctx context.Context, selector string) ([]*hcloudapi.Ser
 	}
 	c.mu.RUnlock()
 
-	v, err, _ := c.group.Do(selector, func() (any, error) {
+	ch := c.group.DoChan(selector, func() (_ any, err error) {
+		// DoChan re-panics on a goroutine of its own, beyond the reach of
+		// controller-runtime's reconcile recovery, so a panic here would kill
+		// the process. Every waiter gets it as an error instead.
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("listing servers panicked: %v", r)
+				log.FromContext(ctx).Error(err, "recovered a panic in the shared server listing", "stack", string(debug.Stack()))
+			}
+		}()
+
 		// Re-checked inside the flight: the goroutine that lost the race to
 		// start it would otherwise refetch immediately after the winner
 		// finished.
@@ -71,7 +91,11 @@ func (c *listCache) list(ctx context.Context, selector string) ([]*hcloudapi.Ser
 			return cached, nil
 		}
 
-		servers, err := c.servers.List(ctx, selector)
+		// Detached from whichever caller started the flight, whose
+		// cancellation would otherwise fail every caller sharing it.
+		flightCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.timeout)
+		defer cancel()
+		servers, err := c.servers.List(flightCtx, selector)
 		if err != nil {
 			return nil, err
 		}
@@ -80,33 +104,15 @@ func (c *listCache) list(ctx context.Context, selector string) ([]*hcloudapi.Ser
 		c.mu.Unlock()
 		return servers, nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	return v.([]*hcloudapi.Server), nil
-}
-
-// get answers from the cached listing, and reports whether it could answer.
-//
-// A miss is not an answer: the caller must fall through to a point read.
-// Absence from the listing only means the listing predates the server, but
-// Provider.Get's nil is read as "gone, or not ours", and core's termination
-// controller drops the Node's finalizer on it, skipping the drain. So only a
-// positive hit is served; a stale cache and an absent id both return false.
-//
-// The Server points into the cached slice and is shared. Do not mutate it.
-func (c *listCache) get(id int64) (*hcloudapi.Server, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.cached == nil || c.now().Sub(c.fetchedAt) >= c.ttl {
-		return nil, false
-	}
-	for _, srv := range c.cached {
-		if srv != nil && srv.ID == id {
-			return srv, true
+	select {
+	case res := <-ch:
+		if res.Err != nil {
+			return nil, res.Err
 		}
+		return res.Val.([]*hcloudapi.Server), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-	return nil, false
 }
 
 // invalidate drops the cached listing.
@@ -148,23 +154,45 @@ func (p *Provider) List(ctx context.Context) ([]*hcloudapi.Server, error) {
 
 // Get returns one server by provider id, or nil if it is gone.
 //
-// Served from the list cache when it holds the id. Drift calls this once per
-// NodeClaim per reconcile and its controller watches Pods unfiltered, so on a
-// busy cluster it runs well above the 5-minute floor, against a Hetzner budget
-// of 3600 requests/hour shared by every client in the project. A rate-limited
-// call is worse than it looks: hcloud-go retries it five times by default.
+// Served from the list cache, refreshed through List's single flight when
+// stale, so a drift pass over N NodeClaims costs one listing rather than N
+// point reads. Drift calls this once per NodeClaim per reconcile and its
+// controller watches Pods unfiltered, so on a busy cluster it runs well above
+// the 5-minute floor, against a Hetzner budget of 3600 requests/hour shared by
+// every client in the project.
+//
+// A miss is not an answer, and neither is a failed listing. Absence from the
+// listing only means the listing predates the server, but nil here is read as
+// "gone, or not ours", and core's termination controller drops the Node's
+// finalizer on it, skipping the drain. So a miss falls through to a point read,
+// and a listing error is returned as an error rather than retried per id, which
+// under a rate limit would multiply the calls that caused it.
 //
 // A hit is the same struct a point read builds (both map through
 // serverFromHcloud) and carries every field serverDrift reads, so it is older
 // rather than weaker. Within the TTL a server changed INTO conformance can
-// still read as drifted, which costs a replacement.
+// still read as drifted, which costs a replacement. It points into the cached
+// slice and is shared. Do not mutate it.
 func (p *Provider) Get(ctx context.Context, providerID string) (*hcloudapi.Server, error) {
+	if p.clusterName == "" {
+		return nil, errNoClusterName
+	}
 	id, err := hcloudapi.ServerIDFromProviderID(providerID)
 	if err != nil {
 		return nil, err
 	}
-	srv, ok := p.cache.get(id)
-	if !ok {
+	servers, err := p.cache.list(ctx, hcloudapi.ManagedBySelector(p.clusterName))
+	if err != nil {
+		return nil, err
+	}
+	var srv *hcloudapi.Server
+	for _, s := range servers {
+		if s != nil && s.ID == id {
+			srv = s
+			break
+		}
+	}
+	if srv == nil {
 		if srv, err = p.servers.Get(ctx, id); err != nil {
 			return nil, err
 		}

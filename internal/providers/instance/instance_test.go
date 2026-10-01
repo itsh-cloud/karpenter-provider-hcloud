@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -37,12 +38,22 @@ type fakeServers struct {
 	getCall  int
 	deleted  []int64
 	nextID   int64
+
+	// listStall runs inside List outside the lock, so a stalled listing does
+	// not block the call counters.
+	listStall func(context.Context) error
 }
 
 func (f *fakeServers) getCalls() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.getCall
+}
+
+func (f *fakeServers) listCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.listCall
 }
 
 func newFakeServers() *fakeServers {
@@ -93,10 +104,18 @@ func (f *fakeServers) GetByName(_ context.Context, name string) (*hcloudapi.Serv
 	return f.byName[name], nil
 }
 
-func (f *fakeServers) List(_ context.Context, _ string) ([]*hcloudapi.Server, error) {
+func (f *fakeServers) List(ctx context.Context, _ string) ([]*hcloudapi.Server, error) {
+	f.mu.Lock()
+	f.listCall++
+	stall := f.listStall
+	f.mu.Unlock()
+	if stall != nil {
+		if err := stall(ctx); err != nil {
+			return nil, err
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.listCall++
 	return f.listed, f.listErr
 }
 
@@ -560,6 +579,23 @@ func TestListRefusesWithoutClusterName(t *testing.T) {
 	}
 }
 
+// TestListReturnsTheListingError: core's NodeClaim garbage collector deletes
+// claims whose server is missing from List, so a failed listing must never
+// read as an empty one.
+func TestListReturnsTheListingError(t *testing.T) {
+	f := newFakeServers()
+	f.listErr = hcloud.Error{Code: hcloud.ErrorCodeRateLimitExceeded, Message: "limit reached"}
+	p := NewProvider(f, instancetype.NewUnavailable(), testCluster)
+
+	servers, err := p.List(context.Background())
+	if err == nil {
+		t.Fatal("List returned no error for a failed listing")
+	}
+	if servers != nil {
+		t.Errorf("List returned %d servers alongside the error", len(servers))
+	}
+}
+
 func TestProviderIDRoundTrip(t *testing.T) {
 	for _, tc := range []struct {
 		in      string
@@ -930,10 +966,10 @@ func TestGetFallsThroughToTheApiOnCacheMiss(t *testing.T) {
 	}
 }
 
-// TestGetFallsThroughWhenTheCacheIsStale.
-//
-// Past the TTL the listing is not an answer, even for an id it contains.
-func TestGetFallsThroughWhenTheCacheIsStale(t *testing.T) {
+// warmCache returns a provider whose list cache holds server 7, and a func
+// that ages the listing past its TTL.
+func warmCache(t *testing.T) (*fakeServers, *Provider, func()) {
+	t.Helper()
 	f := newFakeServers()
 	srv := ownedServer(7, "autoscaled-general-nbg1-aaaaa")
 	f.listed = []*hcloudapi.Server{srv}
@@ -945,14 +981,91 @@ func TestGetFallsThroughWhenTheCacheIsStale(t *testing.T) {
 	if _, err := p.List(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	before := f.getCalls()
+	return f, p, func() { now = now.Add(DefaultListTTL + time.Second) }
+}
 
-	now = now.Add(DefaultListTTL + time.Second)
-	if _, err := p.Get(context.Background(), "hcloud://7"); err != nil {
+// TestGetRefreshesAStaleCache: past the TTL the listing is refreshed rather
+// than bypassed. A point read per NodeClaim is what exhausted the rate limit.
+func TestGetRefreshesAStaleCache(t *testing.T) {
+	f, p, expire := warmCache(t)
+	lists, gets := f.listCalls(), f.getCalls()
+
+	expire()
+	got, err := p.Get(context.Background(), "hcloud://7")
+	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if f.getCalls() == before {
-		t.Error("Get served an expired listing")
+	if got == nil || got.ID != 7 {
+		t.Fatalf("Get = %+v, want the server with id 7", got)
+	}
+	if f.listCalls() != lists+1 {
+		t.Errorf("list calls = %d, want %d: a stale cache must be refreshed", f.listCalls(), lists+1)
+	}
+	if f.getCalls() != gets {
+		t.Errorf("Get made %d point reads for a server the refreshed listing holds", f.getCalls()-gets)
+	}
+}
+
+// TestConcurrentStaleGetsShareOneListing: drift evaluates every NodeClaim at
+// once, so a stale cache must cost one listing, not one per caller.
+func TestConcurrentStaleGetsShareOneListing(t *testing.T) {
+	f, p, expire := warmCache(t)
+	lists, gets := f.listCalls(), f.getCalls()
+	expire()
+
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Go(func() {
+			if got, err := p.Get(context.Background(), "hcloud://7"); err != nil || got == nil {
+				t.Errorf("Get = %+v, %v", got, err)
+			}
+		})
+	}
+	wg.Wait()
+
+	if n := f.listCalls() - lists; n != 1 {
+		t.Errorf("list calls = %d for 16 concurrent Gets on a stale cache, want 1", n)
+	}
+	if n := f.getCalls() - gets; n != 0 {
+		t.Errorf("Get made %d point reads for a server the listing holds", n)
+	}
+}
+
+// TestGetReturnsTheListErrorOnAStaleCache: a failed refresh is neither absence
+// nor a reason to read each server. nil would drop the Node's finalizer, and a
+// point read per NodeClaim under a rate limit multiplies the calls that caused
+// it.
+func TestGetReturnsTheListErrorOnAStaleCache(t *testing.T) {
+	f, p, expire := warmCache(t)
+	f.listErr = hcloud.Error{Code: hcloud.ErrorCodeRateLimitExceeded, Message: "limit reached"}
+	gets := f.getCalls()
+
+	expire()
+	got, err := p.Get(context.Background(), "hcloud://7")
+	if err == nil {
+		t.Fatal("Get swallowed a failed listing")
+	}
+	if !hcloud.IsError(err, hcloud.ErrorCodeRateLimitExceeded) {
+		t.Errorf("err = %v, want the listing's rate-limit error", err)
+	}
+	if got != nil {
+		t.Errorf("Get = %+v alongside an error", got)
+	}
+	if f.getCalls() != gets {
+		t.Errorf("Get fell back to %d point reads after the listing failed", f.getCalls()-gets)
+	}
+}
+
+func TestGetRefusesWithoutClusterName(t *testing.T) {
+	f := newFakeServers()
+	f.byID[7] = ownedServer(7, "autoscaled-general-nbg1-aaaaa")
+	p := NewProvider(f, instancetype.NewUnavailable(), "")
+
+	if _, err := p.Get(context.Background(), "hcloud://7"); !errors.Is(err, errNoClusterName) {
+		t.Fatalf("err = %v, want errNoClusterName", err)
+	}
+	if f.listCalls() != 0 || f.getCalls() != 0 {
+		t.Errorf("Get reached the API with an empty cluster name (%d lists, %d gets)", f.listCalls(), f.getCalls())
 	}
 }
 
@@ -1023,9 +1136,9 @@ func TestGetReportsGenuineAbsence(t *testing.T) {
 	}
 }
 
-// TestGetIsSafeUnderConcurrentListAndInvalidate: get walks the shared slice, so
-// it must hold the read lock while list replaces it and invalidate nils it.
-// Nothing else exercises get concurrently, so a dropped RLock would go unseen.
+// TestGetIsSafeUnderConcurrentListAndInvalidate: Get walks a listing that list
+// replaces and invalidate nils concurrently, so under -race a slice shared
+// without the cache's lock shows up here.
 func TestGetIsSafeUnderConcurrentListAndInvalidate(t *testing.T) {
 	f := newFakeServers()
 	srv := ownedServer(7, "autoscaled-general-nbg1-aaaaa")
@@ -1057,4 +1170,140 @@ func TestGetIsSafeUnderConcurrentListAndInvalidate(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// stallListing blocks every List until release is called or, when honourCtx
+// is set, until that listing's context is done. entered fires as each listing
+// starts. The end of the test releases anything still blocked.
+func stallListing(t *testing.T, f *fakeServers, honourCtx bool) (entered <-chan struct{}, release func()) {
+	t.Helper()
+	in := make(chan struct{}, 16)
+	gate := make(chan struct{})
+	release = sync.OnceFunc(func() { close(gate) })
+	t.Cleanup(release)
+	f.mu.Lock()
+	f.listStall = func(ctx context.Context) error {
+		in <- struct{}{}
+		var done <-chan struct{}
+		if honourCtx {
+			done = ctx.Done()
+		}
+		select {
+		case <-gate:
+			return nil
+		case <-done:
+			return ctx.Err()
+		}
+	}
+	f.mu.Unlock()
+	return in, release
+}
+
+// within fails the test if ch yields nothing for five seconds.
+func within[T any](t *testing.T, ch <-chan T, what string) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s did not return", what)
+		var zero T
+		return zero
+	}
+}
+
+// TestCancelledCallerLeavesAHungListing: a caller whose context is done must
+// not wait out a listing that has stopped answering.
+func TestCancelledCallerLeavesAHungListing(t *testing.T) {
+	f, p, expire := warmCache(t)
+	expire()
+	entered, _ := stallListing(t, f, false)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { _, err := p.Get(ctx, "hcloud://7"); done <- err }()
+	<-entered
+	cancel()
+	if err := within(t, done, "a cancelled Get"); !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
+	}
+}
+
+// TestSharedListingOutlivesItsFirstCaller: the flight is shared, so the caller
+// that happened to start it must not cancel it for everyone else.
+func TestSharedListingOutlivesItsFirstCaller(t *testing.T) {
+	f, p, expire := warmCache(t)
+	expire()
+	lists := f.listCalls()
+	entered, release := stallListing(t, f, true)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	first := make(chan error, 1)
+	go func() { _, err := p.Get(ctx, "hcloud://7"); first <- err }()
+	<-entered
+
+	type result struct {
+		srv *hcloudapi.Server
+		err error
+	}
+	second := make(chan result, 1)
+	go func() { srv, err := p.Get(context.Background(), "hcloud://7"); second <- result{srv, err} }()
+
+	cancel()
+	if err := within(t, first, "the cancelled Get"); !errors.Is(err, context.Canceled) {
+		t.Errorf("first caller: err = %v, want context.Canceled", err)
+	}
+	release()
+
+	got := within(t, second, "the second Get")
+	if got.err != nil || got.srv == nil || got.srv.ID != 7 {
+		t.Errorf("second caller: Get = %+v, %v; the first caller's cancellation reached it", got.srv, got.err)
+	}
+	if n := f.listCalls() - lists; n != 1 {
+		t.Errorf("list calls = %d, want the one shared listing", n)
+	}
+}
+
+// TestSharedListingTimesOut: nothing upstream bounds a listing, so a hung one
+// must fail on its own rather than hold every caller.
+func TestSharedListingTimesOut(t *testing.T) {
+	f, p, expire := warmCache(t)
+	expire()
+	p.cache.timeout = 50 * time.Millisecond
+	stallListing(t, f, true)
+
+	done := make(chan error, 1)
+	go func() { _, err := p.Get(context.Background(), "hcloud://7"); done <- err }()
+	if err := within(t, done, "a Get on a hung listing"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want context.DeadlineExceeded", err)
+	}
+}
+
+// TestPanickingListingIsAnError: a panic in the shared listing must reach every
+// waiter as an error, not take the process down, and must cache nothing.
+func TestPanickingListingIsAnError(t *testing.T) {
+	f := newFakeServers()
+	f.listed = []*hcloudapi.Server{ownedServer(7, "autoscaled-general-nbg1-aaaaa")}
+	p := NewProvider(f, instancetype.NewUnavailable(), testCluster)
+	gate := make(chan struct{})
+	f.listStall = func(context.Context) error {
+		<-gate
+		panic("listing exploded")
+	}
+
+	errs := make(chan error, 4)
+	for range 4 {
+		go func() { _, err := p.List(context.Background()); errs <- err }()
+	}
+	close(gate)
+	for range 4 {
+		if err := within(t, errs, "a List on a panicking listing"); err == nil || !strings.Contains(err.Error(), "panicked") {
+			t.Errorf("err = %v, want the panic reported as an error", err)
+		}
+	}
+	p.cache.mu.RLock()
+	defer p.cache.mu.RUnlock()
+	if p.cache.cached != nil {
+		t.Errorf("the cache holds %d servers from a listing that panicked", len(p.cache.cached))
+	}
 }
