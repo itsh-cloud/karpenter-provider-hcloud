@@ -2,6 +2,7 @@ package v1alpha1
 
 import (
 	"testing"
+	"time"
 
 	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
@@ -104,6 +105,16 @@ func TestHashIgnoresLiveDetectableFields(t *testing.T) {
 				t.Errorf("%s is hashed but must not be: hash changed %s -> %s", tt.name, base, got)
 			}
 		})
+	}
+}
+
+// TestHashIgnoresMaxNodeAge: setting it must not replace every node at once,
+// which is the opposite of the scheduled replacement it asks for.
+func TestHashIgnoresMaxNodeAge(t *testing.T) {
+	nc := fixture()
+	nc.Spec.MaxNodeAge = &metav1.Duration{Duration: 168 * time.Hour}
+	if got, want := nc.Hash(), fixture().Hash(); got != want {
+		t.Errorf("maxNodeAge is hashed: setting it changed the hash %s -> %s", want, got)
 	}
 }
 

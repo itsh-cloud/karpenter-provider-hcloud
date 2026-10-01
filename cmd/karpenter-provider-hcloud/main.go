@@ -96,6 +96,7 @@ func main() {
 	instanceProvider := instance.NewProvider(hcloudapi.NewServers(hcloudClient), unavailable, clusterName)
 
 	cloudProvider := hcloudprovider.New(
+		op.Clock,
 		op.GetClient(),
 		instanceProvider,
 		catalogProvider,

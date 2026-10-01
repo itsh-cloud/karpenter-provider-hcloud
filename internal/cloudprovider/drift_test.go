@@ -3,6 +3,7 @@ package cloudprovider
 import (
 	"context"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
@@ -495,5 +496,77 @@ func TestSameSetIgnoresDuplicates(t *testing.T) {
 
 	if got := serverDrift(nc, srv); got != "" {
 		t.Errorf("serverDrift = %q for the same firewall set with a duplicate on one side", got)
+	}
+}
+
+// TestNodeAgeDriftIsCheckedBeforeTheServerRead: age needs nothing from
+// Hetzner, so an aged node drifts while both reads fail. Ordered after a read,
+// it would cost a request per NodeClaim and stall behind every rate limit.
+func TestNodeAgeDriftIsCheckedBeforeTheServerRead(t *testing.T) {
+	nc := readyNodeClass()
+	nc.Spec.MaxNodeAge = &metav1.Duration{Duration: 168 * time.Hour}
+	cp, servers := newTestProvider(t, nc)
+	servers.getErr = errTransient
+	servers.listErr = errTransient
+
+	claim := &karpv1.NodeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "n1", CreationTimestamp: metav1.NewTime(testNow.Add(-169 * time.Hour))},
+		Spec:       karpv1.NodeClaimSpec{NodeClassRef: &karpv1.NodeClassReference{Group: v1alpha1.Group, Kind: "HCloudNodeClass", Name: "default"}},
+		Status:     karpv1.NodeClaimStatus{ProviderID: "hcloud://1"},
+	}
+	got, err := cp.IsDrifted(context.Background(), claim)
+	if err != nil {
+		t.Fatalf("IsDrifted: %v; the age check reached the server read", err)
+	}
+	if got != NodeAgeDrift {
+		t.Errorf("IsDrifted = %q, want NodeAgeDrift for a node past maxNodeAge", got)
+	}
+}
+
+// TestNodeAgeDriftUsesTheInjectedClock: a claim one hour old by the provider's
+// clock but months old by the wall clock must not drift, so the read that
+// follows the age check still happens and its failure surfaces.
+func TestNodeAgeDriftUsesTheInjectedClock(t *testing.T) {
+	nc := readyNodeClass()
+	nc.Spec.MaxNodeAge = &metav1.Duration{Duration: 168 * time.Hour}
+	cp, servers := newTestProvider(t, nc)
+	servers.getErr = errTransient
+	servers.listErr = errTransient
+
+	claim := &karpv1.NodeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "n1", CreationTimestamp: metav1.NewTime(testNow.Add(-time.Hour))},
+		Spec:       karpv1.NodeClaimSpec{NodeClassRef: &karpv1.NodeClassReference{Group: v1alpha1.Group, Kind: "HCloudNodeClass", Name: "default"}},
+		Status:     karpv1.NodeClaimStatus{ProviderID: "hcloud://1"},
+	}
+	got, err := cp.IsDrifted(context.Background(), claim)
+	if got == NodeAgeDrift {
+		t.Fatal("IsDrifted aged a one-hour-old node, so it is not reading the injected clock")
+	}
+	if err == nil {
+		t.Error("IsDrifted returned no error although the server read fails")
+	}
+}
+
+func TestNodeAgeDrift(t *testing.T) {
+	week := &metav1.Duration{Duration: 168 * time.Hour}
+	for _, tc := range []struct {
+		name     string
+		maxAge   *metav1.Duration
+		created  time.Time
+		expected cloudprovider.DriftReason
+	}{
+		{"aged", week, testNow.Add(-169 * time.Hour), NodeAgeDrift},
+		{"young", week, testNow.Add(-167 * time.Hour), ""},
+		{"unset", nil, testNow.Add(-10000 * time.Hour), ""},
+		{"zeroTimestamp", week, time.Time{}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			nc := resolvedNodeClass()
+			nc.Spec.MaxNodeAge = tc.maxAge
+			claim := &karpv1.NodeClaim{ObjectMeta: metav1.ObjectMeta{Name: "n1", CreationTimestamp: metav1.NewTime(tc.created)}}
+			if got := nodeAgeDrift(testNow, nc, claim); got != tc.expected {
+				t.Errorf("nodeAgeDrift = %q, want %q", got, tc.expected)
+			}
+		})
 	}
 }

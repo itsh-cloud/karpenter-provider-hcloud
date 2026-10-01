@@ -34,11 +34,12 @@ type HCloudNodeClassList struct {
 
 // HCloudNodeClassSpec is the desired shape of a node.
 //
-// Fields carrying `hash:"ignore"` are readable back from the Hetzner API on a
-// live server, so drift compares them against the server rather than a stored
-// hash. Everything else is hashed, because hcloud will not return it once the
-// server exists: notably user_data (write-only) and ssh_keys (absent from the
-// server representation entirely).
+// Fields carrying `hash:"ignore"` are either readable back from the Hetzner API
+// on a live server, so drift compares them against the server rather than a
+// stored hash, or policy about when to replace a node, which must not itself
+// replace every node when edited. Everything else is hashed, because hcloud
+// will not return it once the server exists: notably user_data (write-only) and
+// ssh_keys (absent from the server representation entirely).
 type HCloudNodeClassSpec struct {
 	// ImageSelector picks the base image. Exactly one of name or id: a name
 	// follows Hetzner's periodic image rebuilds, an id pins one build forever.
@@ -57,6 +58,17 @@ type HCloudNodeClassSpec struct {
 	// +kubebuilder:default=Ignore
 	// +optional
 	ImageDriftPolicy ImageDriftPolicy `json:"imageDriftPolicy,omitempty" hash:"ignore"`
+
+	// MaxNodeAge drifts a node once its NodeClaim is older than this, so nodes
+	// are replaced on a schedule through drift: inside the disruption budget,
+	// replacement first, and respecting PDBs. Unset disables it. Prefer it to
+	// a NodePool's expireAfter, which deletes the NodeClaim outside the budget.
+	//
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern=`^([0-9]+(s|m|h))+$`
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('1h')",message="maxNodeAge must be at least 1h"
+	// +optional
+	MaxNodeAge *metav1.Duration `json:"maxNodeAge,omitempty" hash:"ignore"`
 
 	// Locations bounds which Hetzner locations this class may use, e.g.
 	// [nbg1, fsn1]. Empty means every location in the network's zone. This is

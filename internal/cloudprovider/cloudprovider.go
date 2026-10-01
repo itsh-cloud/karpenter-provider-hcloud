@@ -11,6 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/clock"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/cloudprovider"
@@ -30,6 +31,7 @@ var _ cloudprovider.CloudProvider = (*CloudProvider)(nil)
 
 // CloudProvider turns karpenter's scheduling decisions into Hetzner servers.
 type CloudProvider struct {
+	clock        clock.Clock
 	kubeClient   client.Client
 	instances    *instance.Provider
 	catalog      CatalogProvider
@@ -50,6 +52,7 @@ type Bootstrapper interface {
 
 // New returns the Hetzner CloudProvider.
 func New(
+	clk clock.Clock,
 	kubeClient client.Client,
 	instances *instance.Provider,
 	catalogProvider CatalogProvider,
@@ -58,6 +61,7 @@ func New(
 	clusterName string,
 ) *CloudProvider {
 	return &CloudProvider{
+		clock:        clk,
 		kubeClient:   kubeClient,
 		instances:    instances,
 		catalog:      catalogProvider,

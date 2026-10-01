@@ -110,8 +110,9 @@ type BootstrapSpec struct {
 	// Revision is an arbitrary string with no effect other than being hashed:
 	// the deliberate "roll the fleet now" lever. Bump it and every NodeClaim
 	// drifts, so Karpenter replaces nodes one at a time inside the disruption
-	// budget and respecting PDBs. This provider does not use expireAfter,
-	// which is forceful and cannot be budget-gated.
+	// budget and respecting PDBs. spec.maxNodeAge is the automatic path, the
+	// same drift on a schedule; expireAfter is forceful and cannot be
+	// budget-gated.
 	//
 	// +optional
 	Revision string `json:"revision,omitempty"`

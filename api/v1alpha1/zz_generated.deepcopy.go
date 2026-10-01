@@ -6,8 +6,8 @@ package v1alpha1
 
 import (
 	"github.com/awslabs/operatorpkg/status"
-	"k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -203,6 +203,11 @@ func (in *HCloudNodeClassList) DeepCopyObject() runtime.Object {
 func (in *HCloudNodeClassSpec) DeepCopyInto(out *HCloudNodeClassSpec) {
 	*out = *in
 	in.ImageSelector.DeepCopyInto(&out.ImageSelector)
+	if in.MaxNodeAge != nil {
+		in, out := &in.MaxNodeAge, &out.MaxNodeAge
+		*out = new(v1.Duration)
+		**out = **in
+	}
 	if in.Locations != nil {
 		in, out := &in.Locations, &out.Locations
 		*out = make([]string, len(*in))
@@ -377,14 +382,14 @@ func (in *KubeletConfiguration) DeepCopyInto(out *KubeletConfiguration) {
 	*out = *in
 	if in.KubeReserved != nil {
 		in, out := &in.KubeReserved, &out.KubeReserved
-		*out = make(v1.ResourceList, len(*in))
+		*out = make(corev1.ResourceList, len(*in))
 		for key, val := range *in {
 			(*out)[key] = val.DeepCopy()
 		}
 	}
 	if in.SystemReserved != nil {
 		in, out := &in.SystemReserved, &out.SystemReserved
-		*out = make(v1.ResourceList, len(*in))
+		*out = make(corev1.ResourceList, len(*in))
 		for key, val := range *in {
 			(*out)[key] = val.DeepCopy()
 		}
@@ -405,7 +410,7 @@ func (in *KubeletConfiguration) DeepCopyInto(out *KubeletConfiguration) {
 	}
 	if in.EvictionSoftGracePeriod != nil {
 		in, out := &in.EvictionSoftGracePeriod, &out.EvictionSoftGracePeriod
-		*out = make(map[string]metav1.Duration, len(*in))
+		*out = make(map[string]v1.Duration, len(*in))
 		for key, val := range *in {
 			(*out)[key] = val
 		}

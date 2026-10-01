@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
@@ -28,6 +29,9 @@ const (
 	PlacementGroupDrift cloudprovider.DriftReason = "PlacementGroupDrift"
 	PublicNetDrift      cloudprovider.DriftReason = "PublicNetDrift"
 	ImageDrift          cloudprovider.DriftReason = "ImageDrift"
+
+	// NodeAgeDrift means the node is older than the NodeClass's maxNodeAge.
+	NodeAgeDrift cloudprovider.DriftReason = "NodeAgeDrift"
 )
 
 // IsDrifted reports whether a NodeClaim no longer matches what its NodeClass
@@ -65,6 +69,10 @@ func (c *CloudProvider) IsDrifted(ctx context.Context, nodeClaim *karpv1.NodeCla
 	}
 
 	if reason := nodeClassHashDrift(ctx, nodeClass, nodeClaim); reason != "" {
+		return reason, nil
+	}
+	// Before the server read, so it costs no API call.
+	if reason := nodeAgeDrift(c.clock.Now(), nodeClass, nodeClaim); reason != "" {
 		return reason, nil
 	}
 
@@ -111,6 +119,20 @@ func nodeClassHashDrift(ctx context.Context, nodeClass *v1alpha1.HCloudNodeClass
 	}
 	if classHash != claimHash {
 		return NodeClassDrift
+	}
+	return ""
+}
+
+// nodeAgeDrift reports a NodeClaim older than the NodeClass's maxNodeAge.
+func nodeAgeDrift(now time.Time, nodeClass *v1alpha1.HCloudNodeClass, nodeClaim *karpv1.NodeClaim) cloudprovider.DriftReason {
+	maxAge := nodeClass.Spec.MaxNodeAge
+	// A zero timestamp is an object that never came from the API server, and
+	// would read as decades old.
+	if maxAge == nil || nodeClaim.CreationTimestamp.IsZero() {
+		return ""
+	}
+	if now.Sub(nodeClaim.CreationTimestamp.Time) > maxAge.Duration {
+		return NodeAgeDrift
 	}
 	return ""
 }

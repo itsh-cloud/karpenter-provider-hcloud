@@ -63,7 +63,7 @@ truth for kubelet reservations possible.
 | `extraPackages`, `kernelModules`, `sysctls`, `extraFiles` | The escape hatches. `extraFiles` are written before `runcmd`, so they can configure something a later command uses. |
 | `preJoinCommands`, `postJoinCommands` | Run around `kubeadm join`. |
 | `apiServerEndpoint`, `caCertHashes` | Override discovery. Set **both** or neither: half a pair produces a server that boots and never joins. Normally read from the `kube-public/cluster-info` ConfigMap. |
-| `revision` | Has no effect except that it is hashed, so bumping it drifts every node deliberately. |
+| `revision` | Has no effect except that it is hashed, so bumping it drifts every node deliberately. For replacement on a schedule, use [`maxNodeAge`](#maxnodeage). |
 
 Installing a second runtime is composition, not a feature: install it with `extraPackages`
 and `extraFiles`, then advertise it with an ordinary NodePool template label.
@@ -85,14 +85,35 @@ Hetzner rebuilds its named images every few weeks, so the id behind a name chang
 Hetzner's schedule rather than yours. Under `Ignore` that is not drift. `Replace` is for
 people who want their fleet rolled whenever Hetzner publishes.
 
+## maxNodeAge
+
+Unset by default, which disables it. When set, a node whose NodeClaim is older than this is
+drifted with reason `NodeAgeDrift`, so Karpenter replaces it like any other drifted node:
+inside the NodePool's disruption budget, launching the replacement first, and respecting
+PodDisruptionBudgets. Unless the NodePool sets `terminationGracePeriod`, a node whose pods
+cannot be evicted stays until they can.
+
+```yaml
+spec:
+  maxNodeAge: 168h
+```
+
+Hours, minutes and seconds (`168h`, `90m`); the minimum is `1h`. A NodePool's `expireAfter`
+also bounds node age, but it deletes the NodeClaim outside the disruption budget.
+
+`maxNodeAge` is not part of the spec hash, so setting or changing it does not by itself roll
+the fleet. Nodes already older than a new value drift at the next evaluation, all at once,
+and the disruption budget is what paces their replacement.
+
 ## What drifts a node
 
-Two mechanisms, deliberately separate:
+Three mechanisms, deliberately separate:
 
 - **The spec hash**, covering everything Hetzner does not return on a read: `bootstrap`,
   `kubelet`, `sshKeySelectors`, `serverLabels`, `revision`.
 - **A live comparison** for what it does return: location, network, firewalls, placement
   group, public net, and image under `Replace`.
+- **Age**, when `maxNodeAge` is set. It is read from the NodeClaim, so it costs no API call.
 
 The server **type** is never drift. Which shape a workload sits on is a scheduling decision
 and correcting it is consolidation's job; treating it as drift would have the two fighting

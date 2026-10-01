@@ -27,10 +27,11 @@ const (
 
 // Hash returns a stable hash of the drift-relevant parts of the spec.
 //
-// Fields tagged hash:"ignore" are excluded because they are readable back from
-// a live Hetzner server and compared directly. What remains is what hcloud
-// will not tell us after the fact: userData (write-only), ssh_keys (absent
-// from the server representation) and the kubelet config they render into.
+// Fields tagged hash:"ignore" are excluded: they are either readable back from
+// a live Hetzner server and compared directly, or replacement policy that must
+// not roll the fleet when edited. What remains is what hcloud will not tell us
+// after the fact: userData (write-only), ssh_keys (absent from the server
+// representation) and the kubelet config they render into.
 func (in *HCloudNodeClass) Hash() string {
 	return fmt.Sprint(lo.Must(hashstructure.Hash(in.Spec, hashstructure.FormatV2, &hashstructure.HashOptions{
 		// Slices are order-insensitive: reordering sshKeySelectors or

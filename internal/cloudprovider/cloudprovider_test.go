@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	clocktesting "k8s.io/utils/clock/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
@@ -43,6 +45,7 @@ type fakeServers struct {
 	byID    map[int64]*hcloudapi.Server
 	created []hcloudapi.CreateServerRequest
 	getErr  error
+	listErr error
 }
 
 func (f *fakeServers) Create(_ context.Context, req hcloudapi.CreateServerRequest) (*hcloudapi.Server, error) {
@@ -69,6 +72,9 @@ func (f *fakeServers) Get(_ context.Context, id int64) (*hcloudapi.Server, error
 }
 func (f *fakeServers) GetByName(context.Context, string) (*hcloudapi.Server, error) { return nil, nil }
 func (f *fakeServers) List(context.Context, string) ([]*hcloudapi.Server, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	out := make([]*hcloudapi.Server, 0, len(f.byID))
 	for _, s := range f.byID {
 		out = append(out, s)
@@ -95,6 +101,9 @@ func notReadyNodeClass() *v1alpha1.HCloudNodeClass {
 	return nc
 }
 
+// testNow is the fake clock's time in every test provider.
+var testNow = time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+
 func newTestProvider(t *testing.T, objs ...client.Object) (*CloudProvider, *fakeServers) {
 	t.Helper()
 	kubeClient := fake.NewClientBuilder().
@@ -111,7 +120,8 @@ func newTestProvider(t *testing.T, objs ...client.Object) (*CloudProvider, *fake
 		Prices:    map[string]hcloudapi.Price{"nbg1": {MonthlyNet: 8.49}},
 		Locations: []hcloudapi.ServerTypeLocation{{Location: "nbg1", NetworkZone: "eu-central", Available: true}},
 	}}}
-	return New(kubeClient, instances, &fakeCatalog{snapshot: snapshot}, unavailable, &fakeBootstrapper{}, testCluster), servers
+	return New(clocktesting.NewFakeClock(testNow), kubeClient, instances, &fakeCatalog{snapshot: snapshot}, unavailable,
+		&fakeBootstrapper{}, testCluster), servers
 }
 
 // TestCreateRefusesAnUnreadyNodeClass.

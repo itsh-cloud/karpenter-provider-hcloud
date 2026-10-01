@@ -60,11 +60,12 @@ spec:
             description: |-
               HCloudNodeClassSpec is the desired shape of a node.
 
-              Fields carrying `hash:"ignore"` are readable back from the Hetzner API on a
-              live server, so drift compares them against the server rather than a stored
-              hash. Everything else is hashed, because hcloud will not return it once the
-              server exists: notably user_data (write-only) and ssh_keys (absent from the
-              server representation entirely).
+              Fields carrying `hash:"ignore"` are either readable back from the Hetzner API
+              on a live server, so drift compares them against the server rather than a
+              stored hash, or policy about when to replace a node, which must not itself
+              replace every node when edited. Everything else is hashed, because hcloud
+              will not return it once the server exists: notably user_data (write-only) and
+              ssh_keys (absent from the server representation entirely).
             properties:
               bootstrap:
                 description: Bootstrap describes how the node installs and joins.
@@ -205,8 +206,9 @@ spec:
                       Revision is an arbitrary string with no effect other than being hashed:
                       the deliberate "roll the fleet now" lever. Bump it and every NodeClaim
                       drifts, so Karpenter replaces nodes one at a time inside the disruption
-                      budget and respecting PDBs. This provider does not use expireAfter,
-                      which is forceful and cannot be budget-gated.
+                      budget and respecting PDBs. spec.maxNodeAge is the automatic path, the
+                      same drift on a schedule; expireAfter is forceful and cannot be
+                      budget-gated.
                     type: string
                   sysctls:
                     additionalProperties:
@@ -372,6 +374,17 @@ spec:
                   type: string
                 maxItems: 10
                 type: array
+              maxNodeAge:
+                description: |-
+                  MaxNodeAge drifts a node once its NodeClaim is older than this, so nodes
+                  are replaced on a schedule through drift: inside the disruption budget,
+                  replacement first, and respecting PDBs. Unset disables it. Prefer it to
+                  a NodePool's expireAfter, which deletes the NodeClaim outside the budget.
+                pattern: ^([0-9]+(s|m|h))+$
+                type: string
+                x-kubernetes-validations:
+                - message: maxNodeAge must be at least 1h
+                  rule: duration(self) >= duration('1h')
               networkSelector:
                 description: |-
                   NetworkSelector picks the private network to attach. Without it a node
