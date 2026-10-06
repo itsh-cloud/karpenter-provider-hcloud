@@ -1,7 +1,7 @@
 image := env("IMAGE", "ghcr.io/itsh-cloud/karpenter-provider-hcloud")
 version := `git describe --tags --always --dirty 2>/dev/null || echo "dev"`
 
-controller_gen_version := "v0.20.1"
+controller_gen_version := "v0.22.0"
 
 default:
     @just --list
