@@ -10,6 +10,8 @@ github.com/avast/retry-go v3.0.0+incompatible h1:4SOWQ7Qs+oroOTQOYnAHqelpCO0biHS
 github.com/avast/retry-go v3.0.0+incompatible/go.mod h1:XtSnn+n/sHqQIpZ10K1qAevBhOOCWBLXXy3hyiqqBrY=
 github.com/awslabs/operatorpkg v0.0.0-20260708223819-4da4c353c5fa h1:SM2D/TaMO79MaSpBvRLm2Ed/SKbGCxuckRJBDDCGUck=
 github.com/awslabs/operatorpkg v0.0.0-20260708223819-4da4c353c5fa/go.mod h1:G/D6aERpu0RWYGZC8wrAfrtEI6nWHAQIkXmTGnNn2jM=
+github.com/awslabs/operatorpkg v0.0.0-20261006163503-855c7d06c363 h1:1ZOW8m+Oub8mZuNiVBi6zGB9flghqH3hA3xt0saEWjY=
+github.com/awslabs/operatorpkg v0.0.0-20261006163503-855c7d06c363/go.mod h1:G/D6aERpu0RWYGZC8wrAfrtEI6nWHAQIkXmTGnNn2jM=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
 github.com/blang/semver/v4 v4.0.0 h1:1PFHFE6yCCTv8C1TeyNNarDzntLi7wMI5i/pzqYIsAM=
