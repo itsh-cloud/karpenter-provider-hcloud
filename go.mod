@@ -6,7 +6,7 @@ toolchain go1.27.2
 
 require (
 	github.com/awslabs/operatorpkg v0.0.0-20260708223819-4da4c353c5fa
-	github.com/hetznercloud/hcloud-go/v2 v2.50.0
+	github.com/hetznercloud/hcloud-go/v2 v2.52.0
 	github.com/mitchellh/hashstructure/v2 v2.0.2
 	github.com/prometheus/client_golang v1.25.0
 	github.com/samber/lo v1.53.0
