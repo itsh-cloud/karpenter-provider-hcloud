@@ -8,23 +8,13 @@ A [Karpenter](https://karpenter.sh) cloud provider for [Hetzner Cloud](https://w
 It launches Hetzner servers for pending pods, joins them to a kubeadm cluster, and lets
 Karpenter consolidate, replace and retire them.
 
-> **Alpha.** It provisions, consolidates, replaces and terminates nodes on real clusters. The
-> `HCloudNodeClass` API is `v1alpha1` and may still change, so pin a version.
-
-## Why
-
-Cluster-autoscaler has one disruption move: delete an underutilized node. It cannot replace a
-node with a cheaper or better-fitting type.
-
-On Hetzner that gap is expensive. Server types go out of stock in a location for days at a
-time, so an autoscaler falls back to whatever it can order. Once the substitute fills up it is
-no longer underutilized, and it stays for good. Karpenter's consolidation can **replace** that
-node with the preferred type once it is back in stock. This provider brings that to Hetzner.
-
-Provisioning, bin-packing, consolidation, drift and disruption budgets all live in
+Provisioning, bin-packing, consolidation, drift and disruption budgets live in
 [`sigs.k8s.io/karpenter`](https://github.com/kubernetes-sigs/karpenter). This repository
 implements its `CloudProvider` interface and the `HCloudNodeClass` CRD that describes how to
 build a Hetzner node.
+
+> **Alpha.** It provisions, consolidates, replaces and terminates nodes on real clusters. The
+> `HCloudNodeClass` API is `v1alpha1` and may still change, so pin a version.
 
 ## Features
 
@@ -33,7 +23,9 @@ build a Hetzner node.
   for five minutes, so the next pass skips it. Rate limiting is never mistaken for a
   stockout.
 - **Replace-consolidation** with honest prices and zones on every offering, so Karpenter can
-  price a running node and find the cheaper replacement.
+  price a running node and find the cheaper replacement. Hetzner server types go out of stock
+  in a location for days at a time, so a node launched on a pricier fallback type can be
+  replaced with the cheaper one once it is back.
 - **Drift** from three separate sources: a hash of the NodeClass spec, a live comparison of
   location, network, firewalls, placement group, public net and image, and an optional
   `maxNodeAge` for replacement on a schedule inside the disruption budget.
