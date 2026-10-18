@@ -170,10 +170,9 @@ serviceMonitor:
   # is created, looks correct, and is scraped by nothing, which is a silence
   # that reads exactly like the provider having no metrics.
   #
-  # Check yours before enabling:
+  # Check yours and set the matching labels here before enabling:
   #   kubectl get prometheus -A -o jsonpath='{.items[*].spec.serviceMonitorSelector}'
-  additionalLabels:
-    release: kube-prometheus
+  additionalLabels: {}
 
   interval: 30s
 

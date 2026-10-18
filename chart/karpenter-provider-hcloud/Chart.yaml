@@ -18,6 +18,7 @@ keywords:
   - hetzner
   - hcloud
 
-# 1.29 is where the apiserver stopped serving the v1beta2 APIs karpenter core
-# dropped, and matches the oldest control plane this provider is tested against.
-kubeVersion: ">=1.29.0-0"
+# The control plane node protection renders a ValidatingAdmissionPolicy, whose
+# admissionregistration.k8s.io/v1 API is GA from 1.30. That is also the oldest
+# version karpenter core's CI covers.
+kubeVersion: ">=1.30.0-0"
