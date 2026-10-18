@@ -29,13 +29,16 @@ build a Hetzner node.
 - **Drift** from three separate sources: a hash of the NodeClass spec, a live comparison of
   location, network, firewalls, placement group, public net and image, and an optional
   `maxNodeAge` for replacement on a schedule inside the disruption budget.
+- **In-place repair.** With the `NodeRepair` gate on, a node whose kubelet has stopped
+  reporting is reset through the Hetzner API after ten minutes, and replaced if it does not
+  come back.
 - **Volume attachment limits.** Every instance type declares Hetzner's limit of 16 attached
   `csi.hetzner.cloud` volumes, so Karpenter never plans more volume-backed pods onto a new
   node than it can attach.
 - **Per-NodeClaim bootstrap tokens** with a short TTL, garbage-collected with their
   NodeClaim.
 - **Ownership by label.** Every server carries `karpenter.sh/managed-by: <clusterName>`, and
-  every read and delete checks it, failing closed. Servers whose NodeClaim has gone away are
+  every read, delete and reset checks it, failing closed. Servers whose NodeClaim has gone away are
   garbage-collected.
 - **Metrics** for launch outcomes and latency, suppressed offerings, catalog freshness and
   every Hetzner API request, plus Karpenter core's cloud provider call latency and errors.
@@ -55,7 +58,7 @@ build a Hetzner node.
 
 | Provider | Karpenter core | Kubernetes |
 |---|---|---|
-| 0.3.x | v1.15 | 1.30 to 1.36 |
+| 0.3.x, 0.4.x | v1.15 | 1.30 to 1.36 |
 | 0.1.x, 0.2.x | v1.14 | 1.30 to 1.36 |
 
 The Kubernetes range is the one karpenter core is tested against.
@@ -141,12 +144,13 @@ selectors, bootstrap options, kubelet reservations and drift.
 - Debian, kubeadm and containerd only. There is no custom `userData` mode yet.
 - No IPv6-only nodes.
 - Node overlays are not applied, even with the `NodeOverlay` gate on and its CRD installed.
-- Node repair is off unless the `NodeRepair` feature gate is enabled, and then it always
-  replaces the node. In-place reboot is not implemented.
+- Node repair is off unless the `NodeRepair` feature gate is enabled. Only a node whose kubelet
+  has stopped reporting is rebooted in place; a node reporting NotReady is replaced.
 
 ## Documentation
 
 - [docs/nodeclass.md](docs/nodeclass.md): the `HCloudNodeClass` API
+- [docs/node-repair.md](docs/node-repair.md): node repair and in-place reboot
 - [docs/troubleshooting.md](docs/troubleshooting.md): failure modes whose symptom points
   somewhere other than the cause
 - [chart/karpenter-provider-hcloud/README.md](chart/karpenter-provider-hcloud/README.md): chart

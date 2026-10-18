@@ -32,9 +32,11 @@ HCloudNodeClass, and provisions nothing until a NodePool references one.
 Alpha. It provisions nodes, replaces them on consolidation and drift, terminates them, and
 garbage-collects servers whose NodeClaim has gone away.
 
-Drift detection is ON. Node repair is implemented but inert unless the `NodeRepair` feature
-gate is enabled. Consolidation, expiration and drain-and-evict termination are all on by
-default, so a NodePool that should not disrupt anything yet must say so itself with
+Drift detection is ON. Node repair, including in-place reboot, is inert unless the
+`NodeRepair` feature gate is enabled; see
+[node repair](https://github.com/itsh-cloud/karpenter-provider-hcloud/blob/main/docs/node-repair.md).
+Consolidation, expiration and drain-and-evict termination are all on by default, so a NodePool
+that should not disrupt anything yet must say so itself with
 `spec.disruption.budgets: [{nodes: "0"}]`.
 
 **Every NodePool must pin `karpenter.sh/capacity-type: [on-demand]`.** Hetzner has no spot

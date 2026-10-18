@@ -1,0 +1,85 @@
+# Acceptance test: in-place reboot of a node whose kubelet has stopped.
+#
+# Requires the NodeRepair feature gate. The procedure in README.md stops the
+# kubelet on the node this creates; the node goes Ready=Unknown, and ten
+# minutes later Karpenter asks the provider to reboot it. The provider resets
+# the server, the node comes back with a new bootID, and the NodeClaim's
+# Rebooting condition ends with reason RebootSucceeded.
+#
+# The NodePool is tainted so nothing real lands on the node being reset.
+---
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: acceptance-node-reboot
+  labels:
+    karpenter.itsh.dev/acceptance: node-reboot
+spec:
+  # One node, counted before launch. Once the stopped kubelet's taints evict the
+  # pod, its replacement pends, and without this Karpenter would launch a second
+  # node for it. A cpu limit would not do: core compares summed capacity with
+  # strictly-greater, so it still admits the second node.
+  limits:
+    nodes: "1"
+  disruption:
+    # Blocks every voluntary disruption, so consolidation cannot remove the node
+    # while the test waits. Repair counts as Unhealthy and is not listed, so it
+    # still goes through.
+    budgets:
+      - nodes: "0"
+        reasons: [Empty, Drifted, Underutilized]
+  template:
+    metadata:
+      labels:
+        karpenter.itsh.dev/acceptance: node-reboot
+    spec:
+      nodeClassRef:
+        group: karpenter.itsh.dev
+        kind: HCloudNodeClass
+        name: default
+      taints:
+        - key: karpenter.itsh.dev/acceptance
+          value: node-reboot
+          effect: NoSchedule
+      requirements:
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: [on-demand]
+        - key: node.kubernetes.io/instance-type
+          operator: In
+          values: [cx33, cpx32]
+      expireAfter: Never
+---
+# One pod, so Karpenter launches the node.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: acceptance-node-reboot
+  namespace: default
+  labels:
+    karpenter.itsh.dev/acceptance: node-reboot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: acceptance-node-reboot
+  template:
+    metadata:
+      labels:
+        app: acceptance-node-reboot
+    spec:
+      nodeSelector:
+        karpenter.itsh.dev/acceptance: node-reboot
+      tolerations:
+        - key: karpenter.itsh.dev/acceptance
+          operator: Equal
+          value: node-reboot
+          effect: NoSchedule
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+      terminationGracePeriodSeconds: 0

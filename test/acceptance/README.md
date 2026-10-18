@@ -83,3 +83,55 @@ be preferred over a cpx32 in the first, because region is not a tiebreak.
 
 `spec.locations` is deliberately not part of the spec hash, because drift compares it live
 instead: a node in a location missing from the written list drifts at the next evaluation.
+
+## Node reboot
+
+Needs the `NodeRepair` feature gate, and a namespace whose Pod Security admission allows
+privileged pods (for the node debug pod). It hard-resets the server it creates.
+
+```bash
+kubectl apply -f test/acceptance/node-reboot.yaml
+kubectl get nodes -l karpenter.itsh.dev/acceptance=node-reboot -w
+```
+
+Once the node is Ready, record its boot ID and stop its kubelet:
+
+```bash
+NODE=$(kubectl get nodes -l karpenter.itsh.dev/acceptance=node-reboot -o name)
+kubectl get "$NODE" -o jsonpath='{.status.nodeInfo.bootID}{"\n"}'
+kubectl debug "$NODE" -n <privileged namespace> --profile=sysadmin --image=busybox:1.37.0 \
+  -- chroot /host systemctl stop kubelet
+```
+
+Watch:
+
+```bash
+kubectl get nodeclaims -l karpenter.itsh.dev/acceptance=node-reboot \
+  -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Rebooting")]}{"\n"}{end}'
+kubectl logs -n karpenter -l app.kubernetes.io/name=karpenter-provider-hcloud -f \
+  | grep -iE "reboot|reset"
+```
+
+What you should see:
+
+1. Within about a minute the node goes `Ready=Unknown`.
+2. About five minutes later the `unreachable` taint evicts the pause pod. Its replacement
+   pends, because the NodePool's node limit admits no second node.
+3. Ten minutes after the node went `Unknown`, Karpenter commits the reboot: the NodeClaim's
+   `Rebooting` condition turns `True` and the node is tainted `karpenter.sh/rebooting`. The
+   provider logs a reset of the server.
+4. The node reports a different boot ID, which removes the taint, and comes back `Ready`. The
+   pause pod schedules, and `Rebooting` ends `False` with reason `RebootSucceeded`.
+   `karpenter_nodes_reboots_total{result="succeeded"}` has gone up by one.
+
+A `RebootFailed` event, or the NodeClaim being replaced, is a fail.
+
+Teardown, in this order, so the NodePool is empty by the time it is deleted. If a policy
+guards NodePools against deletion, lift it for the last step only.
+
+```bash
+kubectl delete deployment -n default acceptance-node-reboot
+kubectl delete pod -n <privileged namespace> <node-debugger pod>  # the name kubectl debug printed
+kubectl delete nodeclaims -l karpenter.itsh.dev/acceptance=node-reboot
+kubectl delete nodepool acceptance-node-reboot
+```

@@ -16,17 +16,17 @@ documented here so the blast radius is a decision rather than a surprise.
 ### The Hetzner API token is the real blast radius
 
 Hetzner Cloud API tokens are **project-scoped** and are either read-only or read-write, with no
-per-resource scoping. This controller needs read-write to create and delete servers.
+per-resource scoping. This controller needs read-write to create, delete and reset servers.
 
 Code execution inside the controller pod therefore yields full control of the entire Hetzner
 project: every server can be deleted, including control-plane nodes this controller does not
 manage; volumes can be deleted; firewalls can be rewritten.
 
-The in-process guards this controller implements (refusing to delete servers that do not carry
-its `karpenter.sh/managed-by` label, NodePool limits, disruption budgets) constrain **bugs and
-accidental operations**. They do not constrain a compromise, because they live inside the
-binary that would be compromised. Likewise, a deletion guard in infrastructure-as-code tooling
-acts at plan time and has no effect against a direct API call.
+The in-process guards this controller implements (refusing to delete or reset servers that do
+not carry its `karpenter.sh/managed-by` label, NodePool limits, disruption budgets)
+constrain **bugs and accidental operations**. They do not constrain a compromise, because they
+live inside the binary that would be compromised. Likewise, a deletion guard in
+infrastructure-as-code tooling acts at plan time and has no effect against a direct API call.
 
 Recommendations:
 
@@ -35,7 +35,7 @@ Recommendations:
 - Restrict the namespace's egress to the Kubernetes API server, the Hetzner API and DNS.
 - Consider Hetzner's server-level `delete_protection` on nodes this controller must never
   touch. It is the only guard that lives outside the binary, though a read-write token can
-  disable it with one additional call.
+  disable it with one additional call, and it does not cover resets.
 - Treat token revocation as the incident response.
 
 ### Creating bootstrap tokens is a privilege-escalation primitive
