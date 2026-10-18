@@ -17,7 +17,7 @@ The token needs **read-write** on the project's servers.
 
 ```bash
 helm install karpenter-provider-hcloud oci://ghcr.io/itsh-cloud/charts/karpenter-provider-hcloud \
-  --version 0.2.0 --namespace karpenter --set clusterName=<cluster-name>
+  --version 0.3.0 --namespace karpenter --set clusterName=<cluster-name>
 ```
 
 `clusterName` is required. It becomes the `karpenter.sh/managed-by` label on every server, and
