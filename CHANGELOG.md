@@ -7,6 +7,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Instance types declare Hetzner's limit of 16 attached volumes for `csi.hetzner.cloud`, so
+  Karpenter no longer plans more volume-backed pods onto a new node than the node can attach.
+
 ## [0.3.0] - 2026-10-18
 
 ### Changed

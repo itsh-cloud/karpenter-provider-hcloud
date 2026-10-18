@@ -337,3 +337,15 @@ func TestMissingPriceDropsOffering(t *testing.T) {
 		}
 	}
 }
+
+func TestEveryInstanceTypeDeclaresTheVolumeLimit(t *testing.T) {
+	its := Build(testCatalog(), testNodeClass(), 0, NewUnavailable(), Options{})
+	if len(its) == 0 {
+		t.Fatal("no instance types built")
+	}
+	for _, it := range its {
+		if got, ok := it.VolumeAttachmentLimits["csi.hetzner.cloud"]; !ok || got != 16 {
+			t.Errorf("%s: csi.hetzner.cloud volume limit = %d (declared %t), want 16", it.Name, got, ok)
+		}
+	}
+}

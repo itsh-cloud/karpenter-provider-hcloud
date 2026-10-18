@@ -23,6 +23,14 @@ import (
 // over-price the larger types and distort consolidation decisions.
 const HoursPerMonth = 730
 
+// Hetzner attaches at most 16 volumes to a server of any type, which is also
+// what the CSI driver reports in every node's CSINode. Declared per instance
+// type so a NodeClaim is never planned with more volumes than its node takes.
+const (
+	csiDriver           = "csi.hetzner.cloud"
+	maxVolumesPerServer = 16
+)
+
 // Options tunes catalog construction.
 type Options struct {
 	MemoryOverheadPercent float64
@@ -155,11 +163,12 @@ func newInstanceType(
 	}
 
 	return &cloudprovider.InstanceType{
-		Name:         st.Name,
-		Capacity:     capacity,
-		Overhead:     Overhead(&nodeClass.Spec.Kubelet, capacity),
-		Offerings:    offerings,
-		Requirements: instanceTypeRequirements(st, keys(regions)),
+		Name:                   st.Name,
+		Capacity:               capacity,
+		Overhead:               Overhead(&nodeClass.Spec.Kubelet, capacity),
+		Offerings:              offerings,
+		Requirements:           instanceTypeRequirements(st, keys(regions)),
+		VolumeAttachmentLimits: map[string]int{csiDriver: maxVolumesPerServer},
 	}
 }
 
