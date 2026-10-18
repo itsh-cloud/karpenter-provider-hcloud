@@ -7,6 +7,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `karpenter_cloudprovider_duration_seconds` and `karpenter_cloudprovider_errors_total` are
+  recorded. Core emits them only through its metrics wrapper, which the provider never used, so
+  neither series existed.
+
 ## [0.3.1] - 2026-10-18
 
 ### Added

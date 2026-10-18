@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/karpenter/pkg/cloudprovider"
+	cloudprovidermetrics "sigs.k8s.io/karpenter/pkg/cloudprovider/metrics"
 	"sigs.k8s.io/karpenter/pkg/operator"
 
 	corecontrollers "sigs.k8s.io/karpenter/pkg/controllers"
@@ -99,7 +100,7 @@ func main() {
 
 	instanceProvider := instance.NewProvider(hcloudapi.NewServers(hcloudClient), unavailable, clusterName)
 
-	cloudProvider := hcloudprovider.New(
+	cloudProvider := withMetrics(hcloudprovider.New(
 		op.Clock,
 		op.GetClient(),
 		instanceProvider,
@@ -107,7 +108,7 @@ func main() {
 		unavailable,
 		bootstrap.NewProvider(bootstrap.NewTokenMinter(op.GetClient()), discovery, clusterName),
 		clusterName,
-	)
+	))
 
 	cluster, err := newClusterState(ctx, op.Clock, op.GetClient(), cloudProvider)
 	if err != nil {
@@ -138,13 +139,20 @@ func main() {
 		op.GetClient(),
 		op.EventRecorder,
 		cloudProvider,
-		// The undecorated provider is the same one: it is never wrapped in
-		// overlay.Decorate, so there is no decoration to see past.
+		// The overlay-undecorated provider is the same one: it is never
+		// wrapped in overlay.Decorate, so there is no decoration to see past.
 		cloudProvider,
 		cluster,
 		op.InstanceTypeStore,
 		op.PredictionStore,
 	)...).Start(ctx)
+}
+
+// withMetrics is the only path to karpenter_cloudprovider_duration_seconds and
+// karpenter_cloudprovider_errors_total: core records them in this wrapper, not
+// at its call sites.
+func withMetrics(cp *hcloudprovider.CloudProvider) cloudprovider.CloudProvider {
+	return cloudprovidermetrics.Decorate(cp)
 }
 
 // newClusterState hands cluster state the repair policy matcher, which core's
