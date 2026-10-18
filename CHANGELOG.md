@@ -7,6 +7,17 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-19
+
+### Added
+
+- In-place reboot for node repair. With the `NodeRepair` feature gate on, a node whose kubelet
+  has stopped reporting (`Ready=Unknown`) for ten minutes has its server reset through the
+  Hetzner API, and is replaced only if it does not come back. Nodes reporting `Ready=False` are
+  still replaced at thirty minutes. The reset is refused for a server that is not this
+  NodeClaim's, or that is off, stopped or in rescue, and is not repeated when core retries it.
+  See [docs/node-repair.md](docs/node-repair.md).
+
 ## [0.3.2] - 2026-10-18
 
 ### Fixed
@@ -162,7 +173,8 @@ and a real Hetzner project.
 - Debian, kubeadm and containerd only.
 - Node repair is implemented but inert unless the `NodeRepair` feature gate is enabled.
 
-[Unreleased]: https://github.com/itsh-cloud/karpenter-provider-hcloud/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/itsh-cloud/karpenter-provider-hcloud/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/itsh-cloud/karpenter-provider-hcloud/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/itsh-cloud/karpenter-provider-hcloud/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/itsh-cloud/karpenter-provider-hcloud/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/itsh-cloud/karpenter-provider-hcloud/compare/v0.2.0...v0.3.0
