@@ -6,7 +6,7 @@ metadata:
   annotations:
     helm.sh/resource-policy: keep
     argocd.argoproj.io/sync-options: Prune=false,Delete=false
-    controller-gen.kubebuilder.io/version: v0.20.1
+    controller-gen.kubebuilder.io/version: v0.23.0
   name: hcloudnodeclasses.karpenter.itsh.dev
 spec:
   group: karpenter.itsh.dev

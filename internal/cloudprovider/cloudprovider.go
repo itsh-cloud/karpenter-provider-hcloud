@@ -87,26 +87,37 @@ func (c *CloudProvider) GetSupportedNodeClasses() []status.Object {
 //
 // INERT unless the NodeRepair feature gate is on, which it is not by default.
 //
-// The durations are deliberately long, because node repair FORCE-terminates and
-// does not respect a PodDisruptionBudget, while a kubelet restart, a control
-// plane rollout or a network blip all resolve well inside thirty minutes.
+// The durations are deliberately long, because a zero termination grace period
+// makes repair FORCE-terminate without draining or respecting a
+// PodDisruptionBudget, while a kubelet restart, a control plane rollout or a
+// network blip all resolve well inside thirty minutes.
 func (c *CloudProvider) RepairPolicies() []cloudprovider.RepairPolicy {
 	return []cloudprovider.RepairPolicy{
 		{
-			// Well past the five minutes at which the node controller has
-			// already tainted and evicted.
-			ConditionType:      corev1.NodeReady,
-			ConditionStatus:    corev1.ConditionFalse,
-			TolerationDuration: 30 * time.Minute,
+			// Core's required fallback. Well past the five minutes at which the
+			// node controller has already tainted and evicted.
+			ConditionType:          corev1.NodeReady,
+			ConditionStatus:        corev1.ConditionFalse,
+			TolerationDuration:     30 * time.Minute,
+			TerminationGracePeriod: lo.ToPtr(time.Duration(0)),
+			Action:                 cloudprovider.ReplaceNode,
 		},
 		{
 			// The kubelet is not talking to the API server at all, which is
 			// the shape a dead machine takes.
-			ConditionType:      corev1.NodeReady,
-			ConditionStatus:    corev1.ConditionUnknown,
-			TolerationDuration: 30 * time.Minute,
+			ConditionType:          corev1.NodeReady,
+			ConditionStatus:        corev1.ConditionUnknown,
+			ReasonRegex:            ".*",
+			TolerationDuration:     30 * time.Minute,
+			TerminationGracePeriod: lo.ToPtr(time.Duration(0)),
+			Action:                 cloudprovider.ReplaceNode,
 		},
 	}
+}
+
+// Reboot is not implemented: every repair policy replaces the node.
+func (c *CloudProvider) Reboot(context.Context, *karpv1.NodeClaim, string) error {
+	return cloudprovider.NewNodeRebootNotImplementedError()
 }
 
 // Create launches a server for the NodeClaim and returns it hydrated with the

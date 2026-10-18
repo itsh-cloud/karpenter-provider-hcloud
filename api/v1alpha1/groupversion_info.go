@@ -7,9 +7,10 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	crscheme "sigs.k8s.io/controller-runtime/pkg/scheme"
 )
 
 // Group is the API group for this provider's types.
@@ -33,22 +34,24 @@ var (
 	GroupVersion = schema.GroupVersion{Group: Group, Version: "v1alpha1"}
 
 	// SchemeBuilder registers this API's types into a Scheme.
-	SchemeBuilder = &crscheme.Builder{GroupVersion: GroupVersion}
+	SchemeBuilder = runtime.NewSchemeBuilder(addKnownTypes)
 
 	// AddToScheme adds the types in this group-version to the given Scheme.
 	AddToScheme = SchemeBuilder.AddToScheme
 )
 
-func init() {
-	SchemeBuilder.Register(&HCloudNodeClass{}, &HCloudNodeClassList{})
+func addKnownTypes(scheme *runtime.Scheme) error {
+	scheme.AddKnownTypes(GroupVersion, &HCloudNodeClass{}, &HCloudNodeClassList{})
+	metav1.AddToGroupVersion(scheme, GroupVersion)
+	return nil
+}
 
-	// Registering into client-go's GLOBAL scheme is a second, separate
-	// registration, and it is not optional: operatorpkg's object.GVK resolves
-	// through k8s.io/client-go/kubernetes/scheme with lo.Must, so an
-	// unregistered type PANICS rather than erroring, and karpenter core calls
-	// it while wiring its controllers. controller-runtime's manager also
-	// defaults its scheme to this one when Options.Scheme is nil, which
-	// karpenter core leaves it.
-	metav1.AddToGroupVersion(clientgoscheme.Scheme, GroupVersion)
-	clientgoscheme.Scheme.AddKnownTypes(GroupVersion, &HCloudNodeClass{}, &HCloudNodeClassList{})
+func init() {
+	// Registering into client-go's GLOBAL scheme is not optional:
+	// operatorpkg's object.GVK resolves through
+	// k8s.io/client-go/kubernetes/scheme with lo.Must, so an unregistered type
+	// PANICS rather than erroring, and karpenter core calls it while wiring its
+	// controllers. controller-runtime's manager also defaults its scheme to
+	// this one when Options.Scheme is nil, which karpenter core leaves it.
+	utilruntime.Must(AddToScheme(clientgoscheme.Scheme))
 }

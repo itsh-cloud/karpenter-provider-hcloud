@@ -60,6 +60,29 @@
       "addLabels": [
         "needs-review"
       ]
+    },
+    {
+      "description": "Splits patches from minors for the modules the next rule pins, so their patches stay enabled.",
+      "matchPackageNames": [
+        "k8s.io/**",
+        "sigs.k8s.io/controller-runtime",
+        "github.com/awslabs/operatorpkg"
+      ],
+      "separateMinorPatch": true
+    },
+    {
+      "description": "Pinned to the versions karpenter core builds against. Core is built and tested on one client-go and controller-runtime minor, and a newer one still compiles, so CI would not catch the mismatch. A karpenter core bump moves these through go get; only their patches update on their own.",
+      "matchPackageNames": [
+        "k8s.io/**",
+        "sigs.k8s.io/controller-runtime",
+        "github.com/awslabs/operatorpkg"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "major",
+        "digest"
+      ],
+      "enabled": false
     }
   ],
   "osvVulnerabilityAlerts": true,

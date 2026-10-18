@@ -104,9 +104,8 @@ var classes = map[string]Class{
 	string(hcloud.ErrorCodeServerAlreadyAttached): ClassConfig,
 
 	// Fatal.
-	string(hcloud.ErrorCodeForbidden):     ClassFatal,
-	string(hcloud.ErrorCodeUnauthorized):  ClassFatal,
-	string(hcloud.ErrorCodeTokenReadonly): ClassFatal,
+	string(hcloud.ErrorCodeForbidden):    ClassFatal,
+	string(hcloud.ErrorCodeUnauthorized): ClassFatal,
 }
 
 // CodeUniqueness is the code Hetzner returns for a server name already in use.

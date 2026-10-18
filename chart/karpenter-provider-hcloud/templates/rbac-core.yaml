@@ -1,11 +1,15 @@
 {{/*
 Karpenter CORE's RBAC, kept deliberately separate from this provider's own.
 
-This is upstream's rule set rather than a hand-written one, and the separation
-is the point: these rules belong to sigs.k8s.io/karpenter's controllers, so they
-change when the pinned core version changes, not when this provider does. Mixing
-them into the provider's ClusterRole makes it impossible to tell, later, which
-rules exist because of a decision here and which because core needs them.
+These rules belong to sigs.k8s.io/karpenter's controllers, so they change when
+the pinned core version changes, not when this provider does. Mixing them into
+the provider's ClusterRole makes it impossible to tell, later, which rules exist
+because of a decision here and which because core needs them.
+
+The rule: grant what core calls at the pinned version with this provider,
+including paths behind a gate or flag. Upstream's core ClusterRole is the
+checklist, minus what only its kwok provider uses (nodes create, nodes/status),
+and escalation paths are granted only with their gate.
 
 Hand-enumerating this set is a known trap: it is easy to miss podtemplates,
 namespaces and replicationcontrollers, which core reads to resolve pod owners
@@ -34,9 +38,10 @@ rules:
     resources: [capacitybuffers, capacitybuffers/status]
     verbs: [get, list, watch]
   # podtemplates, namespaces and replicationcontrollers are read to resolve a
-  # pod's owner when deciding whether it may be disrupted.
+  # pod's owner when deciding whether it may be disrupted. services is read
+  # only when SCHEDULER_CONFIG sets default topology spread constraints.
   - apiGroups: [""]
-    resources: [pods, nodes, persistentvolumes, persistentvolumeclaims, replicationcontrollers, namespaces, podtemplates]
+    resources: [pods, nodes, persistentvolumes, persistentvolumeclaims, replicationcontrollers, namespaces, podtemplates, services]
     verbs: [get, list, watch]
   - apiGroups: [storage.k8s.io]
     resources: [storageclasses, csinodes, volumeattachments]

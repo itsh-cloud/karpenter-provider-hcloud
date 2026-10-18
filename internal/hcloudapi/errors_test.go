@@ -55,7 +55,6 @@ func TestClassify(t *testing.T) {
 		// limit that provisioning needs.
 		{"forbidden", hcloud.ErrorCodeForbidden, ClassFatal},
 		{"unauthorized", hcloud.ErrorCodeUnauthorized, ClassFatal},
-		{"token_readonly", hcloud.ErrorCodeTokenReadonly, ClassFatal},
 	}
 
 	for _, tt := range tests {

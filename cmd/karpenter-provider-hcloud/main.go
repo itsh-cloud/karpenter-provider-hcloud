@@ -11,11 +11,15 @@ import (
 	"fmt"
 	"os"
 
+	"k8s.io/utils/clock"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/karpenter/pkg/cloudprovider"
 	"sigs.k8s.io/karpenter/pkg/operator"
 
 	corecontrollers "sigs.k8s.io/karpenter/pkg/controllers"
+	"sigs.k8s.io/karpenter/pkg/controllers/node/health"
 	"sigs.k8s.io/karpenter/pkg/controllers/state"
 
 	hcloudprovider "github.com/itsh-cloud/karpenter-provider-hcloud/internal/cloudprovider"
@@ -105,7 +109,11 @@ func main() {
 		clusterName,
 	)
 
-	cluster := state.NewCluster(op.Clock, op.GetClient(), cloudProvider)
+	cluster, err := newClusterState(ctx, op.Clock, op.GetClient(), cloudProvider)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "building cluster state")
+		os.Exit(1)
+	}
 
 	op.WithControllers(ctx, controllers.NewControllers(
 		op.Clock,
@@ -135,7 +143,20 @@ func main() {
 		cloudProvider,
 		cluster,
 		op.InstanceTypeStore,
+		op.PredictionStore,
 	)...).Start(ctx)
+}
+
+// newClusterState hands cluster state the repair policy matcher, which core's
+// repair disruption method dereferences whenever NodeRepair is on. The matcher
+// is nil while the gate is off, and an invalid policy set fails here at
+// startup rather than on the first unhealthy node.
+func newClusterState(ctx context.Context, clk clock.Clock, kubeClient client.Client, cloudProvider cloudprovider.CloudProvider) (*state.Cluster, error) {
+	matcher, err := health.NewRepairPolicyMatcher(ctx, cloudProvider)
+	if err != nil {
+		return nil, err
+	}
+	return state.NewCluster(clk, kubeClient, cloudProvider, state.WithRepairPolicyMatcher(matcher)), nil
 }
 
 // clusterNameEnvVar names the cluster, and therefore what this controller owns.
