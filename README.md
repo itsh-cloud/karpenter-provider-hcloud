@@ -30,7 +30,7 @@ build a Hetzner node.
   location, network, firewalls, placement group, public net and image, and an optional
   `maxNodeAge` for replacement on a schedule inside the disruption budget.
 - **Per-NodeClaim bootstrap tokens** with a short TTL, garbage-collected with their
-  NodeClaim. There is no long-lived shared join token.
+  NodeClaim.
 - **Ownership by label.** Every server carries `karpenter.sh/managed-by: <clusterName>`, and
   every read and delete checks it, failing closed. Servers whose NodeClaim has gone away are
   garbage-collected.

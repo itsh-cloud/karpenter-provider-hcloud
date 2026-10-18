@@ -113,7 +113,7 @@ and a real Hetzner project.
 - **Garbage collection** for servers whose NodeClaim has gone away, floored at five minutes and
   refusing to act when there are no NodeClaims at all.
 - **Per-NodeClaim bootstrap tokens** with a short TTL, owned by the NodeClaim so they are
-  collected with it. No long-lived shared join token.
+  collected with it.
 - **Metrics** for launch outcomes and duration, offering suppression, Hetzner's published
   availability flag (exported, and used for nothing), catalog freshness and unrecognised error
   codes.
