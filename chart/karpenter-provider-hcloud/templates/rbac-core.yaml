@@ -27,10 +27,10 @@ rules:
   - apiGroups: [karpenter.sh]
     resources: [nodepools, nodepools/status, nodeclaims, nodeclaims/status]
     verbs: [get, list, watch]
-  # Feature-gated controllers. Their CRDs are not installed here and the gates
-  # are off, so these grant access to nothing today. Kept so that enabling a
-  # gate later fails on the missing CRD, which says what it is, rather than on
-  # RBAC, which does not.
+  # Feature-gated controllers. Their CRDs are not installed here, so these
+  # grant access to nothing unless something else installs them. Kept so that
+  # enabling a gate later fails on the missing CRD, which says what it is,
+  # rather than on RBAC, which does not.
   - apiGroups: [karpenter.sh]
     resources: [nodeoverlays, nodeoverlays/status]
     verbs: [get, list, watch]
@@ -86,6 +86,14 @@ rules:
   - apiGroups: [""]
     resources: [pods]
     verbs: [delete]
+  {{- if (.Values.controller.featureGates | default dict).PodDeletionCostManagement }}
+  # Only with the gate that annotates pods with a deletion cost. Patch on pods
+  # is an escalation path: spec.containers[*].image is mutable, so the holder
+  # can run code under any pod's ServiceAccount.
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [patch, update]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

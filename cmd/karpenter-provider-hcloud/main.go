@@ -138,8 +138,8 @@ func main() {
 		op.GetClient(),
 		op.EventRecorder,
 		cloudProvider,
-		// The undecorated provider is the same one: node overlays are not
-		// enabled, so there is no decoration to see past.
+		// The undecorated provider is the same one: it is never wrapped in
+		// overlay.Decorate, so there is no decoration to see past.
 		cloudProvider,
 		cluster,
 		op.InstanceTypeStore,

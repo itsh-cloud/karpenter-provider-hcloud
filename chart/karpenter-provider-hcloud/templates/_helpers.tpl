@@ -51,6 +51,39 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- end -}}
 
+{{/*
+Feature gates reach core only through controller.featureGates, because RBAC is
+rendered from that map. A gate set through extraArgs or extraEnv would run
+without its grant, and the flag would override the map. Values must be bools:
+core parses the rendered string with ParseBool, while a template `if` treats
+the string "false" as true.
+*/}}
+{{- define "karpenter-provider-hcloud.validateFeatureGates" -}}
+{{- range .Values.controller.extraArgs -}}
+{{- if regexMatch "^--?feature-gates" (toString .) -}}
+{{- fail "set feature gates through controller.featureGates, not controller.extraArgs" -}}
+{{- end -}}
+{{- end -}}
+{{- range .Values.controller.extraEnv -}}
+{{- if eq (toString .name) "FEATURE_GATES" -}}
+{{- fail "set feature gates through controller.featureGates, not controller.extraEnv" -}}
+{{- end -}}
+{{- end -}}
+{{- range $name, $enabled := .Values.controller.featureGates -}}
+{{- if not (kindIs "bool" $enabled) -}}
+{{- fail (printf "controller.featureGates.%s must be true or false, got %q" $name (toString $enabled)) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "karpenter-provider-hcloud.featureGates" -}}
+{{- $pairs := list -}}
+{{- range $name, $enabled := .Values.controller.featureGates -}}
+{{- $pairs = append $pairs (printf "%s=%t" $name $enabled) -}}
+{{- end -}}
+{{- join "," $pairs -}}
+{{- end -}}
+
 {{- define "karpenter-provider-hcloud.leaderElectionName" -}}
 {{- printf "%s-leader-election" (include "karpenter-provider-hcloud.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}

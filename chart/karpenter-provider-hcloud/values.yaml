@@ -52,7 +52,21 @@ controller:
       # read back through MEMORY_LIMIT to set the Go soft memory limit.
       memory: 512Mi
 
-  # Extra CLI args passed to the operator, e.g. ["--feature-gates=..."].
+  # Karpenter core feature gates by name, each true or false, e.g.
+  # {NodeRepair: true}. Gates left out keep core's default. Core v1.15.0 has
+  # NodeRepair, ReservedCapacity, SpotToSpotConsolidation, NodeOverlay,
+  # StaticCapacity, CapacityBuffer, TerminateFirstDrift, TerminateFirstRepair
+  # and PodDeletionCostManagement. NodeOverlay and CapacityBuffer need CRDs
+  # this chart does not install, and this provider never applies node
+  # overlays, even with their CRD installed.
+  #
+  # The only way to set gates: rendering fails on --feature-gates in extraArgs
+  # or FEATURE_GATES in extraEnv, because the chart grants what a gate needs
+  # from this map. PodDeletionCostManagement gets pods patch and update, which
+  # is withheld otherwise.
+  featureGates: {}
+
+  # Extra CLI args passed to the operator.
   extraArgs: []
   extraEnv: []
 
