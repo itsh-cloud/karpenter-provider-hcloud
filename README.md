@@ -29,13 +29,17 @@ build a Hetzner node.
 - **Drift** from three separate sources: a hash of the NodeClass spec, a live comparison of
   location, network, firewalls, placement group, public net and image, and an optional
   `maxNodeAge` for replacement on a schedule inside the disruption budget.
+- **Volume attachment limits.** Every instance type declares Hetzner's limit of 16 attached
+  `csi.hetzner.cloud` volumes, so Karpenter never plans more volume-backed pods onto a new
+  node than it can attach. Volumes from other storage drivers, such as NFS, do not count
+  against it.
 - **Per-NodeClaim bootstrap tokens** with a short TTL, garbage-collected with their
   NodeClaim.
 - **Ownership by label.** Every server carries `karpenter.sh/managed-by: <clusterName>`, and
   every read and delete checks it, failing closed. Servers whose NodeClaim has gone away are
   garbage-collected.
 - **Metrics** for launch outcomes and latency, suppressed offerings, catalog freshness and
-  every Hetzner API request.
+  every Hetzner API request, plus Karpenter core's cloud provider call latency and errors.
 - **A least-privilege Helm chart.** Every RBAC rule is tied to a call site, Secrets in
   `kube-system` are create and delete only, and an admission policy stops the controller
   deleting control plane nodes.

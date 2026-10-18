@@ -124,6 +124,8 @@ karpenter_hcloud_launch_duration_seconds       # includes fall-through, so the s
 karpenter_hcloud_catalog_stale                 # 1 when the last refresh failed
 hcloud_api_requests_total                      # every Hetzner API request, retries included, by code, method and api_endpoint
 hcloud_api_request_duration_seconds            # request latency by method
+karpenter_cloudprovider_errors_total           # errors returned to Karpenter core, by method, error class and NodePool
+karpenter_cloudprovider_duration_seconds       # latency of Karpenter core's calls into the provider, by method
 ```
 
 `hcloud_api_requests_total{code="429"}` is the rate limit being hit. Hetzner documents a
