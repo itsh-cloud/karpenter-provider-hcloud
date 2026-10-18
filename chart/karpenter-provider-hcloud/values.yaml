@@ -74,8 +74,8 @@ controller:
 #
 # It would be evicted by its own consolidation, and worse, during a disruption
 # it can be the pod being drained from the node whose deletion it is supposed to
-# be finishing. Control plane nodes are managed by terraform, not by this
-# provider, which makes them the one safe place to sit.
+# be finishing. Control plane nodes are never managed by this provider, which
+# makes them the one safe place to sit.
 nodeSelector:
   node-role.kubernetes.io/control-plane: ""
 
@@ -96,21 +96,12 @@ affinity:
 
 topologySpreadConstraints: []
 
-# ndots=1 is REQUIRED, not a tuning knob.
-#
-# The egress policy permits DNS for exactly one name, api.hetzner.cloud. At the
-# cluster default of ndots:5 the resolver treats that as a partial name and
-# tries the search domains first, producing lookups like
-# api.hetzner.cloud.karpenter.svc.cluster.local, which the DNS proxy denies
-# because they are not the permitted name. With ndots:1 a name carrying three
-# dots is queried as an FQDN directly.
-#
-# Cilium's matchPattern would not save you here either: its wildcard matches
-# within a single label, so a pattern cannot cover the search-domain variants.
-#
-# Note for anyone adding an in-cluster dependency later: the binding constraint
-# is the DNS proxy's ALLOWLIST, which permits one name, not this ndots setting.
-# A new in-cluster hostname needs a policy rule, not a resolver tweak.
+# The only external name the controller resolves is api.hetzner.cloud. At the
+# cluster default of ndots:5 the resolver treats it as a partial name and tries
+# every search domain first (api.hetzner.cloud.karpenter.svc.cluster.local and
+# so on). With ndots:1 it is queried as an FQDN directly, which saves the
+# wasted lookups and is what a DNS-allowlisting egress policy needs: one name,
+# not its search-domain variants, which a single-label wildcard cannot match.
 dnsConfig:
   options:
     - name: ndots

@@ -1,46 +1,73 @@
 # karpenter-provider-hcloud
 
-A [Karpenter](https://karpenter.sh) cloud provider for [Hetzner Cloud](https://www.hetzner.com/cloud).
+[![CI](https://github.com/itsh-cloud/karpenter-provider-hcloud/actions/workflows/ci.yaml/badge.svg)](https://github.com/itsh-cloud/karpenter-provider-hcloud/actions/workflows/ci.yaml)
+[![Release](https://img.shields.io/github/v/release/itsh-cloud/karpenter-provider-hcloud?sort=semver)](https://github.com/itsh-cloud/karpenter-provider-hcloud/releases)
+[![License](https://img.shields.io/github/license/itsh-cloud/karpenter-provider-hcloud)](LICENSE)
 
-> **Status: alpha.** Provisions, consolidates and terminates nodes. The API may still
-> change. See [Project status](#project-status).
+A [Karpenter](https://karpenter.sh) cloud provider for [Hetzner Cloud](https://www.hetzner.com/cloud).
+It launches Hetzner servers for pending pods, joins them to a kubeadm cluster, and lets
+Karpenter consolidate, replace and retire them.
+
+> **Alpha.** It provisions, consolidates, replaces and terminates nodes on real clusters. The
+> `HCloudNodeClass` API is `v1alpha1` and may still change, so pin a version.
 
 ## Why
 
-Cluster-autoscaler has exactly one disruption move: delete an underutilized node. It has no
-concept of *"this node is the wrong type, replace it"*.
+Cluster-autoscaler has one disruption move: delete an underutilized node. It cannot replace a
+node with a cheaper or better-fitting type.
 
-That matters on Hetzner, where server types go out of stock in a location for days at a
-time. When your preferred type is unavailable, cluster-autoscaler falls back to whatever it
-can order and then **never undoes it**: the substitute fills up, stops being underutilized,
-and becomes permanent. Karpenter's consolidation controller can *replace* a node with a
-cheaper or better-fitting one, not merely remove idle ones. That is the capability this
-provider brings to Hetzner.
+On Hetzner that gap is expensive. Server types go out of stock in a location for days at a
+time, so an autoscaler falls back to whatever it can order. Once the substitute fills up it is
+no longer underutilized, and it stays for good. Karpenter's consolidation can **replace** that
+node with the preferred type once it is back in stock. This provider brings that to Hetzner.
 
-All the hard parts (provisioning, bin-packing, consolidation, drift, disruption budgets)
-live in [`sigs.k8s.io/karpenter`](https://github.com/kubernetes-sigs/karpenter). This
-repository supplies the nine-method `CloudProvider` interface and the NodeClass CRD that
-describe how to build a Hetzner node.
+Provisioning, bin-packing, consolidation, drift and disruption budgets all live in
+[`sigs.k8s.io/karpenter`](https://github.com/kubernetes-sigs/karpenter). This repository
+implements its `CloudProvider` interface and the `HCloudNodeClass` CRD that describes how to
+build a Hetzner node.
 
-## Scope and opinions
+## Features
 
-- **Debian + kubeadm + containerd only.** The kubeadm join and containerd configuration are
-  first-class CRD fields rather than an opaque `userData` blob, which is what makes
-  per-NodeClaim bootstrap tokens, correct taint rendering and a single source of truth for
-  kubelet reservations possible. Talos, k3s and non-Debian images are not supported in v1.
-- **x86/amd64 only** for now.
-- **Bootstrap tokens are minted per NodeClaim** with a short TTL, owned by the NodeClaim so
-  they are garbage-collected with it. There is no long-lived shared join token.
-- **No opinion beyond that baseline.** Extra runtimes, drivers and kernel modules go in
-  `extraPackages`, `extraFiles` and the join hooks, and are advertised to the scheduler with
-  ordinary NodePool template labels. A `Custom` bootstrap mode taking a templated `userData`
-  is the planned route to other distributions; the `osFamily` and `mode` enums are
-  single-valued today so that addition is additive.
+- **Price-ordered capacity fall-through.** A create walks the candidates cheapest first. A
+  stockout on one (type, location) pair falls through to the next and suppresses that pair
+  for five minutes, so the next pass skips it. Rate limiting is never mistaken for a
+  stockout.
+- **Replace-consolidation** with honest prices and zones on every offering, so Karpenter can
+  price a running node and find the cheaper replacement.
+- **Drift** from three separate sources: a hash of the NodeClass spec, a live comparison of
+  location, network, firewalls, placement group, public net and image, and an optional
+  `maxNodeAge` for replacement on a schedule inside the disruption budget.
+- **Per-NodeClaim bootstrap tokens** with a short TTL, garbage-collected with their
+  NodeClaim. There is no long-lived shared join token.
+- **Ownership by label.** Every server carries `karpenter.sh/managed-by: <clusterName>`, and
+  every read and delete checks it, failing closed. Servers whose NodeClaim has gone away are
+  garbage-collected.
+- **Metrics** for launch outcomes and latency, suppressed offerings, catalog freshness and
+  every Hetzner API request.
+- **A least-privilege Helm chart.** Every RBAC rule is tied to a call site, Secrets in
+  `kube-system` are create and delete only, and an admission policy stops the controller
+  deleting control plane nodes.
 
-## Quick start
+## Requirements
 
-Requires a kubeadm-built cluster, hcloud-cloud-controller-manager, and a Hetzner project
-token with read-write on servers.
+- A kubeadm-built cluster on Kubernetes 1.30 or newer, with containerd.
+- [hcloud-cloud-controller-manager](https://github.com/hetznercloud/hcloud-cloud-controller-manager).
+- Debian images for the nodes. Nodes are x86 only; the controller image is built for amd64
+  and arm64.
+- A Hetzner Cloud project API token with read-write access, ideally one used by nothing else.
+
+## Compatibility
+
+| Provider | Karpenter core | Kubernetes |
+|---|---|---|
+| 0.3.x | v1.15 | 1.30 to 1.36 |
+| 0.1.x, 0.2.x | v1.14 | 1.30 to 1.36 |
+
+The Kubernetes range is the one karpenter core is tested against.
+
+## Install
+
+The chart never templates the Hetzner token. Create the Secret first:
 
 ```bash
 kubectl create namespace karpenter
@@ -48,66 +75,107 @@ kubectl create secret generic hcloud -n karpenter --from-literal=token=<project-
 
 helm install karpenter-provider-hcloud \
   oci://ghcr.io/itsh-cloud/charts/karpenter-provider-hcloud \
-  --namespace karpenter --set clusterName=<your-cluster-name>
+  --namespace karpenter --set clusterName=<cluster-name>
 ```
 
-`clusterName` has no default on purpose: it becomes the ownership label on every server, and
-every destructive path gates on it. Two clusters sharing one Hetzner project **must** use
-different names or each will treat the other's nodes as its own to delete.
+`clusterName` has no default on purpose. It becomes the ownership label on every server, and
+every destructive path checks it. Two clusters sharing one Hetzner project **must** use
+different names, or each will treat the other's nodes as its own to delete.
 
-Then create an `HCloudNodeClass` and a `NodePool`. See [docs/nodeclass.md](docs/nodeclass.md)
-for the full API, and [docs/troubleshooting.md](docs/troubleshooting.md) before you debug
-anything.
+The chart's [README](chart/karpenter-provider-hcloud/README.md) covers its values, what the
+RBAC grants and why, and how to enable karpenter core feature gates.
 
-### One thing that will bite you
+## Example
 
-Every NodePool must pin the capacity type:
+An `HCloudNodeClass` says how to build a node. A `NodePool` says which nodes Karpenter may
+launch from it.
 
 ```yaml
-requirements:
-  - key: karpenter.sh/capacity-type
-    operator: In
-    values: [on-demand]
+apiVersion: karpenter.itsh.dev/v1alpha1
+kind: HCloudNodeClass
+metadata:
+  name: default
+spec:
+  imageSelector:
+    name: debian-13
+  locations: [nbg1, fsn1]
+  networkSelector:
+    name: k8s-network
+  firewallSelectors:
+    - name: k8s-nodes
+  bootstrap:
+    kubernetesVersion: "1.34.7" # match your control plane
+---
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: default
+spec:
+  template:
+    spec:
+      nodeClassRef:
+        group: karpenter.itsh.dev
+        kind: HCloudNodeClass
+        name: default
+      requirements:
+        # Required on every NodePool, see below.
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: [on-demand]
+        - key: karpenter.itsh.dev/server-type-line
+          operator: In
+          values: [cx, cpx]
+  limits:
+    cpu: "64"
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 5m
 ```
 
-Hetzner has no spot capacity, but an unconstrained requirement is *unbounded*, so Karpenter
-concludes spot is permitted and pins every consolidation replacement to it. The launch then
-fails forever in a retry loop. This is the most common way to misconfigure this provider.
+**Every NodePool must pin `karpenter.sh/capacity-type: [on-demand]`.** Hetzner has no spot
+capacity, but an unconstrained requirement is unbounded, so Karpenter concludes spot is
+allowed and pins consolidation replacements to it. Those launches then fail and are retried
+forever. It is the most common misconfiguration.
 
-## Project status
+See [docs/nodeclass.md](docs/nodeclass.md) for the full `HCloudNodeClass` API, including
+selectors, bootstrap options, kubelet reservations and drift.
 
-Alpha, exercised against a real cluster and a real Hetzner project. It provisions nodes,
-replaces them on consolidation and drift, terminates them, and garbage-collects servers
-whose NodeClaim has gone away.
+## Limitations
 
-Not yet done: ARM, non-Debian images, a `Custom` bootstrap mode, and IPv6-only nodes. The
-CRD is `v1alpha1` and may change. Pin a tag.
+- x86 nodes only.
+- Debian, kubeadm and containerd only. There is no custom `userData` mode yet.
+- No IPv6-only nodes.
+- Node overlays are not applied, even with the `NodeOverlay` gate on and its CRD installed.
+- Node repair is off unless the `NodeRepair` feature gate is enabled, and then it always
+  replaces the node. In-place reboot is not implemented.
+
+## Documentation
+
+- [docs/nodeclass.md](docs/nodeclass.md): the `HCloudNodeClass` API
+- [docs/troubleshooting.md](docs/troubleshooting.md): failure modes whose symptom points
+  somewhere other than the cause
+- [chart/karpenter-provider-hcloud/README.md](chart/karpenter-provider-hcloud/README.md): chart
+  values, RBAC and feature gates
+- [CHANGELOG.md](CHANGELOG.md)
 
 ## Development
 
 Requires Go (see `go.mod`) and [`just`](https://github.com/casey/just).
 
 ```bash
-just build      # build the binary
-just test       # run tests
-just lint       # golangci-lint
-just vet        # go vet
-just generate   # regenerate CRDs and deepcopy (needs controller-gen)
+just build             # build the binary
+just test              # run the tests
+just lint              # golangci-lint
+just vet               # go vet
+just generate-docker   # regenerate CRDs and deepcopy in a container
 ```
 
-`just generate-docker` runs the generation step in a container if you would rather not
-install `controller-gen` locally.
-
-`just e2e` runs tests against a **real Hetzner project**, creating and destroying servers. It
-costs money, needs a scratch project, and is never run in CI.
-
-## Documentation
-
-- [docs/nodeclass.md](docs/nodeclass.md): the `HCloudNodeClass` API
-- [docs/troubleshooting.md](docs/troubleshooting.md): failure modes and how to read them
-- [chart/karpenter-provider-hcloud/README.md](chart/karpenter-provider-hcloud/README.md):
-  chart values, and what the RBAC grants and why
+[CONTRIBUTING.md](CONTRIBUTING.md) has the conventions, and [SECURITY.md](SECURITY.md) the
+threat model and how to report a vulnerability.
 
 ## License
 
 Apache 2.0. See [LICENSE](LICENSE).
+
+This project is not affiliated with or endorsed by Hetzner Online GmbH or the Karpenter
+project.

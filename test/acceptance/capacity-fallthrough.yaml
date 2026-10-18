@@ -1,26 +1,19 @@
-# Acceptance test 7a: capacity fall-through, deliberately location-independent.
-#
-# This is the founding incident of the project, reproduced on purpose. The
-# cluster ended up on eight mixed workers because cluster-autoscaler could only
-# DELETE an underutilised node, never REPLACE a correctly-utilised but
-# wrongly-typed one. When cx33 went out of stock in nbg1, CA fell through to a
-# cpx32 at roughly four times the price and then had no mechanism to come back
-# once cx33 returned.
+# Acceptance test: capacity fall-through, deliberately location-independent.
 #
 # What this exercises, end to end, without depending on stock anywhere:
 #
-#   1. cx33 is preferred on price (EUR 8.49 against cpx32's EUR 35.49), so a
-#      healthy nbg1 provisions cx33 and nothing interesting happens.
+#   1. cx33 ranks first on price, so a healthy nbg1 provisions a cx33 and
+#      nothing interesting happens.
 #   2. Whenever cx33 IS out of stock in nbg1, the create fails with a
 #      capacity-class code, the provider classifies it, marks that
 #      (type, location) pair unavailable, and falls through to cpx32. The pod
-#      gets a node either way, which CA also managed.
-#   3. The part CA could not do: once cx33 returns and the suppression expires,
-#      consolidation simulates replacing the cpx32, finds the replacement
-#      cheaper and the pods reschedulable, and executes a REPLACE.
+#      gets a node either way.
+#   3. Once cx33 returns and the suppression expires, consolidation simulates
+#      replacing the cpx32, finds the replacement cheaper and the pods
+#      reschedulable, and executes a REPLACE. cluster-autoscaler can only
+#      delete an underutilised node, never replace a wrongly-typed one.
 #
-# Step 3 is the whole justification for the project, and it needs nothing from
-# the provider beyond an honest Price and Available.
+# Step 3 needs nothing from the provider beyond an honest Price and Available.
 #
 # Safe to leave running: one replica means one node, the limit caps it at two if
 # anything misbehaves, and the taint keeps real workloads off. Delete the
@@ -29,9 +22,9 @@
 apiVersion: karpenter.sh/v1
 kind: NodePool
 metadata:
-  name: acceptance-7a
+  name: acceptance-capacity-fallthrough
   labels:
-    itsh.dev/acceptance: "7a"
+    karpenter.itsh.dev/acceptance: capacity-fallthrough
 spec:
   # Core's limit check is strictly-greater (usage.Cmp(limit) > 0), and it sums
   # NodeClaim CAPACITY, so at exactly 4 the limit is not yet exceeded and a
@@ -49,37 +42,31 @@ spec:
   template:
     metadata:
       labels:
-        itsh.dev/acceptance: "7a"
+        karpenter.itsh.dev/acceptance: capacity-fallthrough
     spec:
       nodeClassRef:
         group: karpenter.itsh.dev
         kind: HCloudNodeClass
         name: default
-      # Tainted, so nothing real can land here and the test cannot take
-      # production workloads down with it when it consolidates.
+      # Tainted, so nothing real can land here and the test cannot take other
+      # workloads down with it when it consolidates.
       taints:
-        - key: itsh.dev/acceptance
-          value: "7a"
+        - key: karpenter.itsh.dev/acceptance
+          value: capacity-fallthrough
           effect: NoSchedule
       requirements:
         # Pinned to on-demand, and this is NOT optional on Hetzner.
         #
         # Left unconstrained, the requirement is unbounded, so core's
         # Has(spot) AND Has(on-demand) test is true and consolidation pins
-        # every replacement to spot (consolidation.go, "OD -> [OD,Spot]"). Its
-        # comment says the launch will then fail and it will "leave the node
-        # alone"; it does not. It retries roughly every 27 seconds forever,
-        # creating and deleting a NodeClaim each time, because Hetzner has no
-        # spot capacity at all and never will.
-        #
-        # Observed live on 2026-08-16 before this line existed.
+        # every replacement to spot. The launch then fails and is retried
+        # roughly every 27 seconds forever, creating and deleting a NodeClaim
+        # each time, because Hetzner has no spot capacity.
         - key: karpenter.sh/capacity-type
           operator: In
           values: [on-demand]
-        # Exactly the two types from the founding incident, and nothing else.
-        # Price ranks them cx33 then cpx32, which is also the order the
-        # expander's table wanted, so a correct provider takes cx33 whenever it
-        # can get one.
+        # Two types and nothing else. Price ranks them cx33 then cpx32, so a
+        # correct provider takes cx33 whenever it can get one.
         - key: node.kubernetes.io/instance-type
           operator: In
           values: [cx33, cpx32]
@@ -89,34 +76,33 @@ spec:
         - key: topology.kubernetes.io/region
           operator: In
           values: [nbg1]
-      # No expireAfter. Worker recycling runs through drift, and an expiry here
-      # would replace the node on a timer and confuse the reading.
+      # An expiry would replace the node on a timer and confuse the reading.
       expireAfter: Never
 ---
 # One pod, sized so exactly one node is needed.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: acceptance-7a
+  name: acceptance-capacity-fallthrough
   namespace: default
   labels:
-    itsh.dev/acceptance: "7a"
+    karpenter.itsh.dev/acceptance: capacity-fallthrough
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: acceptance-7a
+      app: acceptance-capacity-fallthrough
   template:
     metadata:
       labels:
-        app: acceptance-7a
+        app: acceptance-capacity-fallthrough
     spec:
       nodeSelector:
-        itsh.dev/acceptance: "7a"
+        karpenter.itsh.dev/acceptance: capacity-fallthrough
       tolerations:
-        - key: itsh.dev/acceptance
+        - key: karpenter.itsh.dev/acceptance
           operator: Equal
-          value: "7a"
+          value: capacity-fallthrough
           effect: NoSchedule
       containers:
         - name: pause
@@ -124,8 +110,7 @@ spec:
           resources:
             requests:
               # Big enough that the node is not "empty" and therefore has to be
-              # REPLACED rather than simply deleted, which is the distinction
-              # between what karpenter can do and what CA could.
+              # REPLACED rather than simply deleted.
               cpu: "1"
               memory: 512Mi
       terminationGracePeriodSeconds: 0

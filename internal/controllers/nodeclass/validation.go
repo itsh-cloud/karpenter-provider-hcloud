@@ -127,8 +127,8 @@ func (v *Validation) Reconcile(ctx context.Context, nodeClass *v1alpha1.HCloudNo
 	// cluster to Ready=False at once, stops every NodePool and makes core delete
 	// in-flight NodeClaims, over one bad response from an endpoint the operator
 	// does not control. The empty case is reachable: ServerTypes drops any
-	// location entry whose Location pointer is nil, which is the field Hetzner
-	// is changing before 2026-10-01.
+	// location entry whose Location pointer is nil, so a response without
+	// that field reads as an empty catalog.
 	if snapshot == nil || locations.catalogEmpty {
 		reason, message := reasonCatalogNotFetched, "the Hetzner server type catalog has not been fetched yet"
 		if snapshot != nil {
@@ -266,8 +266,8 @@ func locationScope(snapshot *catalog.Snapshot, nodeClass *v1alpha1.HCloudNodeCla
 				Name:        name,
 				NetworkZone: zone,
 				// Datacenters is deliberately empty: Hetzner's datacenter
-				// API is deprecated and stops being returned after
-				// 2026-10-01, and server types are reported per location.
+				// API is deprecated, and server types are reported per
+				// location.
 			})
 		}
 	}

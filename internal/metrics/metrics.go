@@ -49,7 +49,7 @@ var (
 	//
 	// The label is LOCATION, not datacenter: this provider orders by location,
 	// the suppression cache is keyed that way, and Hetzner's datacenter API is
-	// deprecated and stops being returned after 2026-10-01.
+	// deprecated.
 	OfferingUnavailable = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace,
 		Subsystem: subsystem,

@@ -7,6 +7,44 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Built against karpenter core v1.15.0, with `k8s.io/*`, controller-runtime and operatorpkg on
+  the versions core v1.15.0 builds with, and hcloud-go v2.52.0. The karpenter.sh CRDs carry
+  the v1.15 schema: the `Unhealthy` disruption budget reason, and `consolidateAfter`
+  defaulting to `0s` instead of being required. Both are additive, and the upgrade drifts no
+  node.
+- **Breaking (chart):** karpenter core feature gates are set through
+  `controller.featureGates`. Rendering fails on `--feature-gates` in `controller.extraArgs`
+  or `FEATURE_GATES` in `controller.extraEnv`, because the chart grants what a gate needs from
+  that map.
+- **Breaking (chart):** `serviceMonitor.additionalLabels` defaults to `{}` instead of
+  `release: kube-prometheus`. Set it to whatever your Prometheus's `serviceMonitorSelector`
+  matches.
+- The chart requires Kubernetes 1.30, where the ValidatingAdmissionPolicy it renders by
+  default is GA.
+- Repair policies use the v1.15 form. Ready=False and Ready=Unknown each replace the node
+  after 30 minutes without draining, as before. With `NodeRepair` on, the policy set is now
+  validated at startup.
+- `Reboot` reports in-place reboot as not implemented, so node repair always replaces.
+- Core's ClusterRole reads `services`, which core lists when `SCHEDULER_CONFIG` sets default
+  topology spread constraints.
+- `v1alpha1.SchemeBuilder` is apimachinery's `runtime.SchemeBuilder` instead of
+  controller-runtime's deprecated `scheme.Builder`. `v1alpha1.AddToScheme` is unchanged.
+
+### Added
+
+- `controller.featureGates`, a map of core gate name to bool. Enabling
+  `PodDeletionCostManagement` there also grants pods `patch` and `update`, which is withheld
+  otherwise because it is an escalation path.
+
+### Fixed
+
+- SECURITY.md said the controller could `get` Secrets by name. It holds only `create` and
+  `delete`.
+- The troubleshooting guide no longer attributes duplicate nodes to pod nomination, which
+  only gates disruption, and its zone label section describes the label this provider sets.
+
 ## [0.2.0] - 2026-10-01
 
 ### Added
@@ -48,11 +86,6 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   allows. A cache miss still reads live, because absence from a listing is not absence of the
   server.
 
-### Changed
-
-- Comment prose trimmed throughout, and values specific to one operator removed from the debug
-  default and the tests.
-
 ## [0.1.0] - 2026-08-16
 
 First release. The provider provisions, replaces and terminates nodes against a real cluster
@@ -70,8 +103,8 @@ and a real Hetzner project.
   pass skips it. Rate limiting is explicitly not a capacity signal: treating it as one converts
   throttling into a self-inflicted outage.
 - **Ownership model.** Every server carries `karpenter.sh/managed-by: <clusterName>`, checked on
-  read as well as delete and failing closed. Terraform-created control plane servers carry no
-  such label, which is what makes the check meaningful. `clusterName` has no default.
+  read as well as delete and failing closed. Control plane servers provisioned outside the
+  provider carry no such label, which is what makes the check meaningful. `clusterName` has no default.
 - **Drift**: the NodeClass spec hash (gated on both sides agreeing on the hash version) plus a
   live comparison of location, network, firewalls, placement group, public net and image. The
   server type is deliberately never a drift reason.
@@ -82,8 +115,19 @@ and a real Hetzner project.
 - **Metrics** for launch outcomes and duration, offering suppression, Hetzner's published
   availability flag (exported, and used for nothing), catalog freshness and unrecognised error
   codes.
+- **HCloudNodeClass status**: every selector is resolved against the Hetzner API, the
+  resolved identifiers and usable locations are published, and the per-resource conditions
+  roll up into `Ready`, which is what Karpenter gates provisioning on. A missing resource is
+  reported as a `False` condition naming the selector; a failed API call is retried and
+  leaves the condition alone, so a blip cannot take a healthy class down.
+- A **termination finalizer** holds an `HCloudNodeClass` open while NodeClaims still
+  reference it. Karpenter core neither blocks nor cascades here, so without it a delete
+  leaves nodes running against a class that no longer exists.
 - **Helm chart** with least-privilege RBAC derived from call sites, and an admission policy
   denying the provider's ServiceAccount deletion of control plane nodes.
+- Built against `sigs.k8s.io/karpenter` v1.14.0, pinned exactly. Upstream minor bumps are
+  reviewed by hand rather than auto-merged, because they have changed provider-facing
+  interfaces.
 
 ### Notes
 
@@ -101,23 +145,7 @@ and a real Hetzner project.
 - Debian, kubeadm and containerd only.
 - Node repair is implemented but inert unless the `NodeRepair` feature gate is enabled.
 
-### Added
-
-- Repository skeleton: build tooling, linting, CI, and a bare operator binary that starts
-  `sigs.k8s.io/karpenter`'s manager with no controllers registered.
-- Pinned `sigs.k8s.io/karpenter` v1.14.0. The pin is exact, and upstream minor bumps are
-  reviewed by hand rather than auto-merged, because they have historically changed
-  provider-facing interfaces.
-- `HCloudNodeClass` status controller: resolves every selector against the Hetzner API,
-  publishes the resolved identifiers and the usable locations, and rolls the per-resource
-  conditions up into `Ready`, which is what Karpenter gates provisioning on. A missing
-  resource is reported as a `False` condition naming the selector; a failed API call is
-  retried and leaves the condition alone, so a blip cannot take a healthy class down.
-- `HCloudNodeClass` hash controller, including the hash-version back-fill that keeps a
-  change to the hash generator from marking the whole fleet drifted at once.
-- Termination finalizer holding an `HCloudNodeClass` open while NodeClaims still reference
-  it. Karpenter core neither blocks nor cascades here, so without it a delete leaves nodes
-  running against a class that no longer exists.
-- `HCloudNodeClass` and `HCloudNodeClassList` are registered into client-go's global scheme.
-  `operatorpkg`'s GVK lookup resolves through that scheme and panics on an unknown type, so
-  the omission would have killed the binary at startup rather than failing a reconcile.
+[Unreleased]: https://github.com/itsh-cloud/karpenter-provider-hcloud/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/itsh-cloud/karpenter-provider-hcloud/compare/v0.1.1...v0.2.0
+[0.1.1]: https://github.com/itsh-cloud/karpenter-provider-hcloud/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/itsh-cloud/karpenter-provider-hcloud/releases/tag/v0.1.0

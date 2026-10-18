@@ -9,9 +9,9 @@ only acts on Nodes whose providerID it recognises. That bound is application
 logic, so it evaporates in exactly the two cases worth defending against: a
 logic bug, and a compromised ServiceAccount.
 
-This costs karpenter nothing. It never manages control plane nodes here: they
-are created by terraform, carry no ownership label, and are excluded from the
-provider's own delete path already. So the policy only ever fires on a request
+This costs karpenter nothing. It never manages control plane nodes: they are
+provisioned outside this provider, carry no ownership label, and are excluded
+from the provider's own delete path already. So the policy only ever fires on a request
 karpenter should not have been making.
 
 It does NOT defend against a stolen HCLOUD_TOKEN, which deletes the Hetzner

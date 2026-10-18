@@ -25,8 +25,8 @@ manage; volumes can be deleted; firewalls can be rewritten.
 The in-process guards this controller implements (refusing to delete servers that do not carry
 its `karpenter.sh/managed-by` label, NodePool limits, disruption budgets) constrain **bugs and
 accidental operations**. They do not constrain a compromise, because they live inside the
-binary that would be compromised. Likewise, Terraform `prevent_destroy` on a server is a
-plan-time lifecycle guard and has no effect against a direct API call.
+binary that would be compromised. Likewise, a deletion guard in infrastructure-as-code tooling
+acts at plan time and has no effect against a direct API call.
 
 Recommendations:
 
@@ -46,10 +46,10 @@ CSR auto-approval flow.
 
 This is inherent to the join function. It is bounded in two ways: Kubernetes enforces that
 `auth-extra-groups` begins with `system:bootstrappers:`, so `system:masters` cannot be
-injected; and this controller requests **no read verbs on secrets** — no `list`, no `watch`,
-and `get` only by explicit resource name. The absence of general secret read is deliberate and
-load-bearing: it blocks the common escalation of minting a service-account-token secret for a
-privileged service account and reading the result.
+injected; and this controller holds only `create` and `delete` on secrets in `kube-system`,
+with **no read verbs at all**: no `get`, `list` or `watch`. The absence of secret read is
+deliberate and load-bearing: it blocks the common escalation of minting a
+service-account-token secret for a privileged service account and reading the result.
 
 Tokens are minted per NodeClaim with a short TTL and an `ownerReference` on the NodeClaim, so
 they are garbage-collected when the NodeClaim is deleted for any reason, including a failed

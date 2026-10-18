@@ -36,9 +36,9 @@ regenerated files.
 Plain `testing`, table-driven, with `sigs.k8s.io/controller-runtime/pkg/client/fake` for
 Kubernetes interactions and an in-memory fake for the Hetzner API. No ginkgo, no testify.
 
-Anything that talks to the real Hetzner API belongs behind the `e2e` build tag. `just e2e`
-creates and destroys real servers against a scratch project and costs money, so it is never
-wired into CI.
+Nothing in the test suite talks to the real Hetzner API. [`test/acceptance`](test/acceptance)
+holds manual checks against a live cluster and project; they create real servers and cost
+money, so they are never wired into CI.
 
 ## Commit and PR conventions
 
@@ -53,6 +53,9 @@ This provider implements the `CloudProvider` interface from `sigs.k8s.io/karpent
 pinned to an exact version. Upstream **minor** releases have historically changed
 provider-facing interfaces, so those bumps are reviewed by hand rather than auto-merged. If a
 change requires a newer core, say so explicitly in the PR.
+
+`k8s.io/*`, `sigs.k8s.io/controller-runtime` and `github.com/awslabs/operatorpkg` stay on the
+versions the pinned core builds against, and move with it. `renovate.json` holds them there.
 
 ## License
 

@@ -26,8 +26,9 @@ func testCatalog() []hcloudapi.ServerType {
 		{ID: 45, Name: "cax11", Cores: 2, MemoryGiB: 4, DiskGB: 40, Architecture: "arm", CPUType: "shared", StorageType: "local", Prices: price(4.49)},
 		{ID: 999, Name: "cx11", Cores: 1, MemoryGiB: 2, DiskGB: 20, Architecture: "x86", Deprecated: true, Prices: price(3.29)},
 	}
-	// Mirrors the live API on 2026-08-16: cx43 reported unavailable on the
-	// mainland, available in Helsinki. Ordering it in nbg1 succeeded anyway.
+	// The shape the published flag takes in practice: cx43 reported
+	// unavailable on the mainland and available in Helsinki, while ordering
+	// it in nbg1 succeeds.
 	locs := func(availMainland bool) []hcloudapi.ServerTypeLocation {
 		return []hcloudapi.ServerTypeLocation{
 			{Location: "nbg1", NetworkZone: "eu-central", Available: availMainland},

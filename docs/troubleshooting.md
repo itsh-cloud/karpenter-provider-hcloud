@@ -37,23 +37,25 @@ A `"replacement-nodes":[{"capacity-type":"spot"...}]` on a cluster with no spot 
 ## A node is never replaced, however wrong its type
 
 **Symptom.** An expensive or oversized node sits there forever. Consolidation events say
-`Can't replace with a cheaper node` even though a cheaper type is permitted and available.
+`Can't replace with a cheaper node` even though a cheaper type is permitted and available, or
+`Node does not have label "topology.kubernetes.io/zone"`.
 
-**Cause.** The node has no `topology.kubernetes.io/zone` label, or it disagrees with what
-this provider puts on its offerings. Karpenter prices a running node by finding an offering
-whose zone equals the node's zone label; if none matches, the node prices at **0**, and
-nothing is ever cheaper than zero.
+**Cause.** Karpenter prices a running node by finding an offering whose zone equals the
+node's `topology.kubernetes.io/zone` label. This provider puts that label on every NodeClaim,
+derived from the location the same way hcloud-cloud-controller-manager derives it, and core
+copies it onto the Node at registration. A missing label stops consolidation for that node
+with the event above. A label rewritten to a value no offering carries makes the node price
+at **0**, and nothing is ever cheaper than zero.
 
-**How to confirm.**
+**How to confirm.** Each node's zone should match its NodeClaim's:
 
 ```bash
-kubectl get node <name> -o jsonpath='{.metadata.labels.topology\.kubernetes\.io/zone}'
+kubectl get nodeclaims -o custom-columns='NODE:.status.nodeName,ZONE:.metadata.labels.topology\.kubernetes\.io/zone'
+kubectl get nodes -L topology.kubernetes.io/zone
 ```
 
-Empty means hcloud-cloud-controller-manager has the zone label disabled
-(`HCLOUD_INSTANCES_ZONE_LABEL_ENABLED=false`), which upstream now recommends for new clusters
-and plans to make permanent. A value that is not this provider's mapping for the node's
-region means the two have diverged. Either way the diagnosis is the CCM's configuration.
+A node whose label differs has had it rewritten by something else in the cluster. Find what
+writes it rather than correcting the node by hand.
 
 ## Pods with an existing volume are permanently unschedulable
 
@@ -98,25 +100,12 @@ A transient API failure deliberately leaves conditions **untouched** rather than
 `Unknown` with a `...Unreachable` reason means the API has never been reachable for that
 resource.
 
-## One pending pod produces several nodes
-
-**Symptom.** A single unschedulable pod results in two or more nodes, bounded only by the
-NodePool's limits.
-
-**Cause.** Karpenter nominates a pod to an in-flight NodeClaim for `max(2 × batch-max-duration,
-10s)`, which is **20 seconds** by default. Nodes here take substantially longer than that to
-boot, join and become schedulable, so the nomination expires and the pod looks unschedulable
-again.
-
-**Mitigation.** Set `limits` on every NodePool so the blast radius is bounded, and consider
-raising `--batch-max-duration`. Reducing node boot time helps most.
-
 ## Servers exist in Hetzner with no NodeClaim
 
 The provider garbage-collects these, but not immediately and not unconditionally:
 
 - Only servers carrying this cluster's `karpenter.sh/managed-by` label. Anything else,
-  including every Terraform-created control plane node, is invisible to it.
+  including control plane nodes provisioned outside the provider, is invisible to it.
 - Only after five minutes, because a server exists before its NodeClaim records a provider ID
   and reaping sooner would delete nodes mid-creation.
 - Never when there are **no** NodeClaims at all, which is indistinguishable from having lost
@@ -137,9 +126,9 @@ hcloud_api_requests_total                      # every Hetzner API request, retr
 hcloud_api_request_duration_seconds            # request latency by method
 ```
 
-`hcloud_api_requests_total{code="429"}` is the rate limit being hit. Hetzner documents the
-3600 requests/hour limit per project; the 429 message names the token. Requests by other
-clients are not counted here.
+`hcloud_api_requests_total{code="429"}` is the rate limit being hit. Hetzner documents a
+limit of 3600 requests per hour per project. Other clients using the same project share that
+limit and are not counted here.
 
 The two `offering_*` series are deliberately separate. Hetzner's published availability flag
 is neither sufficient nor necessary: types reported unavailable have been ordered

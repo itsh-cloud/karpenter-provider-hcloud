@@ -86,8 +86,3 @@ instance-types *ARGS:
 # Render the cloud-init a NodeClaim would receive, for diffing
 render-userdata *ARGS:
     go run ./cmd/karpenter-provider-hcloud render-userdata {{ ARGS }}
-
-# End-to-end tests. Needs a SCRATCH hcloud project, creates and destroys real
-# servers, and costs money per run. Never wire this into CI.
-e2e:
-    go test -tags e2e -v -timeout 30m ./test/e2e/...

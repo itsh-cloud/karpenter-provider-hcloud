@@ -17,8 +17,12 @@ The token needs **read-write** on the project's servers.
 
 ```bash
 helm install karpenter-provider-hcloud oci://ghcr.io/itsh-cloud/charts/karpenter-provider-hcloud \
-  --version 0.2.0 --namespace karpenter
+  --version 0.2.0 --namespace karpenter --set clusterName=<cluster-name>
 ```
+
+`clusterName` is required. It becomes the `karpenter.sh/managed-by` label on every server, and
+every destructive path checks it, so two clusters sharing a Hetzner project must use different
+names.
 
 Installing with no NodePool is inert: the controller resolves and reports every
 HCloudNodeClass, and provisions nothing until a NodePool references one.
@@ -37,10 +41,31 @@ default, so a NodePool that should not disrupt anything yet must say so itself w
 capacity, but an unconstrained requirement is unbounded, so Karpenter pins consolidation
 replacements to spot and retries the failed launch indefinitely.
 
+## Feature gates
+
+Set karpenter core feature gates through `controller.featureGates`, as a map of gate name to
+`true` or `false`:
+
+```yaml
+controller:
+  featureGates:
+    NodeRepair: true
+```
+
+The chart renders them into `FEATURE_GATES` and grants what a gate needs from the same map,
+so rendering fails if a gate is set any other way (`--feature-gates` in
+`controller.extraArgs`, or `FEATURE_GATES` in `controller.extraEnv`).
+
+Enabling `PodDeletionCostManagement` also grants `patch` and `update` on pods cluster-wide.
+That is an escalation path, since a pod's container image is mutable and patching it runs
+chosen code under that pod's ServiceAccount, which is why the grant is withheld unless the
+gate is on.
+
 ## What it grants, and why
 
-Every rule in `templates/rbac.yaml` is derived from a call site, and the
-comments there say which. Three are worth knowing before you read the file:
+Every rule in `templates/rbac.yaml` (this provider) and `templates/rbac-core.yaml`
+(karpenter core) is derived from a call site, and the comments there say which. Three are
+worth knowing before you read the files:
 
 - **Cluster-wide read on pods, nodes and volumeattachments** is not this
   provider's choice. Karpenter's operator starts field indexers over those types
@@ -58,17 +83,23 @@ comments there say which. Three are worth knowing before you read the file:
 
 ## Requirements that are not tuning knobs
 
-- `dnsConfig.options.ndots=1`. If you run the egress policy from this project,
-  DNS is permitted for exactly one name. At the cluster default of `ndots:5` the
-  resolver treats `api.hetzner.cloud` as partial and tries the search domains
-  first, producing lookups the DNS proxy denies. Cilium's `matchPattern` cannot
-  paper over this: its wildcard matches within a single label.
+- `dnsConfig.options.ndots=1`. The only external name the controller resolves
+  is `api.hetzner.cloud`. At the cluster default of `ndots:5` the resolver
+  treats it as partial and tries every search domain first, which an egress
+  policy allowlisting DNS by name would deny.
 - **The controller must not run on nodes it manages.** The default
   `nodeSelector` and `tolerations` place it on control plane nodes, which are
   managed by your own infrastructure code rather than by this provider. On a
   node it manages, it can be consolidated away by itself, or be the pod being
   drained from the node whose termination it is supposed to be completing.
 - **In-cluster config only.** No kubeconfig is mounted and none is read.
+
+## Metrics
+
+`serviceMonitor.enabled=true` creates a ServiceMonitor for the Prometheus Operator. Set
+`serviceMonitor.additionalLabels` to whatever your Prometheus's `serviceMonitorSelector`
+matches (for kube-prometheus-stack, usually `release: <its release name>`), or it is created
+and scraped by nothing.
 
 ## CRDs
 
