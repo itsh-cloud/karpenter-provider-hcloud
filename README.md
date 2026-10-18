@@ -22,7 +22,7 @@ build a Hetzner node.
   stockout on one (type, location) pair falls through to the next and suppresses that pair
   for five minutes, so the next pass skips it. Rate limiting is never mistaken for a
   stockout.
-- **Replace-consolidation** with honest prices and zones on every offering, so Karpenter can
+- **Replace-consolidation** with a price and zone on every offering, so Karpenter can
   price a running node and find the cheaper replacement. Hetzner server types go out of stock
   in a location for days at a time, so a node launched on a pricier fallback type can be
   replaced with the cheaper one once it is back.
@@ -127,7 +127,7 @@ spec:
 **Every NodePool must pin `karpenter.sh/capacity-type: [on-demand]`.** Hetzner has no spot
 capacity, but an unconstrained requirement is unbounded, so Karpenter concludes spot is
 allowed and pins consolidation replacements to it. Those launches then fail and are retried
-forever. It is the most common misconfiguration.
+forever.
 
 See [docs/nodeclass.md](docs/nodeclass.md) for the full `HCloudNodeClass` API, including
 selectors, bootstrap options, kubelet reservations and drift.
