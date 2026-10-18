@@ -31,8 +31,7 @@ build a Hetzner node.
   `maxNodeAge` for replacement on a schedule inside the disruption budget.
 - **Volume attachment limits.** Every instance type declares Hetzner's limit of 16 attached
   `csi.hetzner.cloud` volumes, so Karpenter never plans more volume-backed pods onto a new
-  node than it can attach. Volumes from other storage drivers, such as NFS, do not count
-  against it.
+  node than it can attach.
 - **Per-NodeClaim bootstrap tokens** with a short TTL, garbage-collected with their
   NodeClaim.
 - **Ownership by label.** Every server carries `karpenter.sh/managed-by: <clusterName>`, and
