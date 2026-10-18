@@ -107,6 +107,18 @@ type Servers interface {
 	// List returns every server matching a label selector. Server-side
 	// filtering, so the response does not carry the whole project.
 	List(ctx context.Context, labelSelector string) ([]*Server, error)
+	Reset(ctx context.Context, id int64) error
+	// RecentActions returns one page of a server's actions, newest first.
+	RecentActions(ctx context.Context, id int64) ([]Action, error)
+}
+
+// Action is one action Hetzner recorded against a server.
+type Action struct {
+	// Command is Hetzner's name for it, e.g. reset_server.
+	Command string
+	// Status is running, success or error.
+	Status  string
+	Started time.Time
 }
 
 type serverClient struct {
@@ -224,6 +236,37 @@ func (s *serverClient) Delete(ctx context.Context, id int64) error {
 		return fmt.Errorf("deleting server %d: %w", id, redact(err))
 	}
 	return nil
+}
+
+func (s *serverClient) Reset(ctx context.Context, id int64) error {
+	if _, _, err := s.c.Server.Reset(ctx, &hcloud.Server{ID: id}); err != nil {
+		if hcloud.IsError(err, hcloud.ErrorCodeNotFound) {
+			return &NotFoundError{Kind: "server", Selector: fmt.Sprint(id)}
+		}
+		return fmt.Errorf("resetting server %d: %w", id, redact(err))
+	}
+	return nil
+}
+
+func (s *serverClient) RecentActions(ctx context.Context, id int64) ([]Action, error) {
+	actions, _, err := s.c.Server.Action.ListFor(ctx, &hcloud.Server{ID: id}, hcloud.ActionListOpts{
+		ListOpts: hcloud.ListOpts{PerPage: 50},
+		Sort:     []string{"started:desc"},
+	})
+	if err != nil {
+		if hcloud.IsError(err, hcloud.ErrorCodeNotFound) {
+			return nil, &NotFoundError{Kind: "server", Selector: fmt.Sprint(id)}
+		}
+		return nil, fmt.Errorf("listing actions of server %d: %w", id, redact(err))
+	}
+	out := make([]Action, 0, len(actions))
+	for _, a := range actions {
+		if a == nil {
+			continue
+		}
+		out = append(out, Action{Command: a.Command, Status: string(a.Status), Started: a.Started})
+	}
+	return out, nil
 }
 
 func (s *serverClient) Get(ctx context.Context, id int64) (*Server, error) {

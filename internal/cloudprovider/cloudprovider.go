@@ -82,20 +82,17 @@ func (c *CloudProvider) GetSupportedNodeClasses() []status.Object {
 	return []status.Object{&v1alpha1.HCloudNodeClass{}}
 }
 
-// RepairPolicies returns the node conditions karpenter should treat as
-// unhealthy enough to replace the machine.
-//
-// INERT unless the NodeRepair feature gate is on, which it is not by default.
-//
-// The durations are deliberately long, because a zero termination grace period
-// makes repair FORCE-terminate without draining or respecting a
-// PodDisruptionBudget, while a kubelet restart, a control plane rollout or a
-// network blip all resolve well inside thirty minutes.
+// RepairPolicies returns the node conditions karpenter repairs, inert unless
+// the NodeRepair feature gate is on. A silent kubelet is reset at ten minutes,
+// and the node is replaced at thirty if no reboot ran (a budget can hold one
+// back) or as soon as a reboot fails. Core replaces instead of rebooting once
+// two reboots were committed within 24h. Every grace period is zero: by then
+// the not-ready and unreachable NoExecute taints have evicted the pods, and a
+// drain against a dead kubelet cannot complete.
 func (c *CloudProvider) RepairPolicies() []cloudprovider.RepairPolicy {
 	return []cloudprovider.RepairPolicy{
 		{
-			// Core's required fallback. Well past the five minutes at which the
-			// node controller has already tainted and evicted.
+			// Core's required fallback.
 			ConditionType:          corev1.NodeReady,
 			ConditionStatus:        corev1.ConditionFalse,
 			TolerationDuration:     30 * time.Minute,
@@ -103,8 +100,14 @@ func (c *CloudProvider) RepairPolicies() []cloudprovider.RepairPolicy {
 			Action:                 cloudprovider.ReplaceNode,
 		},
 		{
-			// The kubelet is not talking to the API server at all, which is
-			// the shape a dead machine takes.
+			ConditionType:          corev1.NodeReady,
+			ConditionStatus:        corev1.ConditionUnknown,
+			ReasonRegex:            ".*",
+			TolerationDuration:     10 * time.Minute,
+			TerminationGracePeriod: lo.ToPtr(time.Duration(0)),
+			Action:                 cloudprovider.RebootNode,
+		},
+		{
 			ConditionType:          corev1.NodeReady,
 			ConditionStatus:        corev1.ConditionUnknown,
 			ReasonRegex:            ".*",
@@ -115,9 +118,23 @@ func (c *CloudProvider) RepairPolicies() []cloudprovider.RepairPolicy {
 	}
 }
 
-// Reboot is not implemented: every repair policy replaces the node.
-func (c *CloudProvider) Reboot(context.Context, *karpv1.NodeClaim, string) error {
-	return cloudprovider.NewNodeRebootNotImplementedError()
+// Reboot hard-resets the server: the only policy that asks for it is a silent
+// kubelet (Ready=Unknown), where the OS cannot be expected to act on an ACPI
+// reboot. Core retries the same operation until this returns nil, so a reset
+// that started since the request counts as already issued.
+func (c *CloudProvider) Reboot(ctx context.Context, nodeClaim *karpv1.NodeClaim, _ string) error {
+	if nodeClaim.Status.ProviderID == "" {
+		return cloudprovider.NewNodeClaimNotFoundError(fmt.Errorf("nodeclaim %q has no providerID", nodeClaim.Name))
+	}
+	var requestedAt time.Time
+	if cond := nodeClaim.StatusConditions().Get(karpv1.ConditionTypeRebooting); cond != nil {
+		requestedAt = cond.LastTransitionTime.Time
+	}
+	err := c.instances.Reboot(ctx, nodeClaim.Status.ProviderID, nodeClaim.Name, requestedAt)
+	if hcloudapi.IsNotFound(err) {
+		return cloudprovider.NewNodeClaimNotFoundError(err)
+	}
+	return err
 }
 
 // Create launches a server for the NodeClaim and returns it hydrated with the

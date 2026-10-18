@@ -36,12 +36,19 @@ type fakeServers struct {
 	listErr  error
 	listCall int
 	getCall  int
+	getErr   error
 	deleted  []int64
 	nextID   int64
 
 	// listStall runs inside List outside the lock, so a stalled listing does
 	// not block the call counters.
 	listStall func(context.Context) error
+
+	resets      []int64
+	resetErr    error
+	actions     []hcloudapi.Action
+	actionsErr  error
+	actionsCall int
 }
 
 func (f *fakeServers) getCalls() int {
@@ -95,6 +102,9 @@ func (f *fakeServers) Get(_ context.Context, id int64) (*hcloudapi.Server, error
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.getCall++
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
 	return f.byID[id], nil
 }
 
@@ -117,6 +127,20 @@ func (f *fakeServers) List(ctx context.Context, _ string) ([]*hcloudapi.Server, 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.listed, f.listErr
+}
+
+func (f *fakeServers) Reset(_ context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resets = append(f.resets, id)
+	return f.resetErr
+}
+
+func (f *fakeServers) RecentActions(context.Context, int64) ([]hcloudapi.Action, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.actionsCall++
+	return f.actions, f.actionsErr
 }
 
 func (f *fakeServers) serverTypes() []string {

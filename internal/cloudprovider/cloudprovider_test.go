@@ -46,6 +46,8 @@ type fakeServers struct {
 	created []hcloudapi.CreateServerRequest
 	getErr  error
 	listErr error
+	resets  []int64
+	actions []hcloudapi.Action
 }
 
 func (f *fakeServers) Create(_ context.Context, req hcloudapi.CreateServerRequest) (*hcloudapi.Server, error) {
@@ -80,6 +82,13 @@ func (f *fakeServers) List(context.Context, string) ([]*hcloudapi.Server, error)
 		out = append(out, s)
 	}
 	return out, nil
+}
+func (f *fakeServers) Reset(_ context.Context, id int64) error {
+	f.resets = append(f.resets, id)
+	return nil
+}
+func (f *fakeServers) RecentActions(context.Context, int64) ([]hcloudapi.Action, error) {
+	return f.actions, nil
 }
 
 func readyNodeClass() *v1alpha1.HCloudNodeClass {

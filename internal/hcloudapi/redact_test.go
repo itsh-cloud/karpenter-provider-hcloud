@@ -269,8 +269,10 @@ func TestRedactAtTheWrapSite(t *testing.T) {
 			)
 			servers := NewServers(client)
 			for name, call := range map[string]func() error{
-				"Get":  func() error { _, err := servers.Get(context.Background(), 1); return err },
-				"List": func() error { _, err := servers.List(context.Background(), "a=b"); return err },
+				"Get":           func() error { _, err := servers.Get(context.Background(), 1); return err },
+				"List":          func() error { _, err := servers.List(context.Background(), "a=b"); return err },
+				"Reset":         func() error { return servers.Reset(context.Background(), 1) },
+				"RecentActions": func() error { _, err := servers.RecentActions(context.Background(), 1); return err },
 			} {
 				err := call()
 				if err == nil {
