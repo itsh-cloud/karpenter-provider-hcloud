@@ -2,7 +2,7 @@ module github.com/itsh-cloud/karpenter-provider-hcloud
 
 go 1.26.9
 
-toolchain go1.27.2
+toolchain go1.27.3
 
 require (
 	github.com/awslabs/operatorpkg v0.0.0-20261002163259-5e8ed3699dea
