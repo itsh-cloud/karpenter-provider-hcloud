@@ -22,3 +22,7 @@ keywords:
 # admissionregistration.k8s.io/v1 API is GA from 1.30. That is also the oldest
 # version karpenter core's CI covers.
 kubeVersion: ">=1.30.0-0"
+annotations:
+  artifacthub.io/links: |
+    - name: ITSH
+      url: https://itsh.dev

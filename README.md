@@ -176,5 +176,7 @@ threat model and how to report a vulnerability.
 
 Apache 2.0. See [LICENSE](LICENSE).
 
+Built and maintained by [ITSH](https://itsh.dev), where it runs in production.
+
 This project is not affiliated with or endorsed by Hetzner Online GmbH or the Karpenter
 project.
