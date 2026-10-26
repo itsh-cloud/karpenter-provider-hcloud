@@ -1,6 +1,6 @@
 module github.com/itsh-cloud/karpenter-provider-hcloud
 
-go 1.26.9
+go 1.26.10
 
 toolchain go1.27.3
 
@@ -18,7 +18,7 @@ require (
 	k8s.io/client-go v0.36.5
 	k8s.io/utils v0.0.0-20260707023825-cf1189d6abe3
 	sigs.k8s.io/controller-runtime v0.24.1
-	sigs.k8s.io/karpenter v1.15.0
+	sigs.k8s.io/karpenter v1.15.1
 	sigs.k8s.io/yaml v1.6.0
 )
 
