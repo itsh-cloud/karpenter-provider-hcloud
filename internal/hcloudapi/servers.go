@@ -150,10 +150,10 @@ func (s *serverClient) Create(ctx context.Context, req CreateServerRequest) (*Se
 		// Explicitly true. The default is also true, but a server created
 		// stopped never runs cloud-init, so it never joins, and the only
 		// symptom is a NodeClaim that ages out after fifteen minutes.
-		StartAfterCreate: hcloud.Ptr(true),
+		StartAfterCreate: new(true),
 		// Volumes are attached by the CSI driver, never at create time.
 		// Automount would mount whatever was passed behind the driver's back.
-		Automount: hcloud.Ptr(false),
+		Automount: new(false),
 		PublicNet: &hcloud.ServerCreatePublicNet{
 			EnableIPv4: req.PublicIPv4,
 			EnableIPv6: req.PublicIPv6,
